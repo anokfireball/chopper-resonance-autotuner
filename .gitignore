@@ -1,4 +1,5 @@
-chopper-resonance-tuner/*
+__pycache__
 .idea/*
-*.csv
 .venv
+*.csv
+chopper-resonance-tuner/*
