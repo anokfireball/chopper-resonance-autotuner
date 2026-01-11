@@ -183,15 +183,28 @@ Here are some results compared to the original library:
 
 Initial Vibrations:
 
-   ![Vibrations Before](/wiki/pictures/core_xy_isolation_before.png)
-
-   ![Vibrations After](/wiki/pictures/core_xy_isolation_after.png)
-
-Measured vibrations:
+   Before:
 
    ![Measured Vibrations Before](/wiki/pictures/core_xy_isolation_vibrations_before.png)
 
+   After:
+
    ![Measured Vibrations After](/wiki/pictures/core_xy_isolation_vibrations_after.png)
 
+As you see, by moving on diagonals and isolating a particular stepper motor,
+the peak resonance speed reduces by `sqrt(2)` from `89 mm/s` to `63 mm/s`
+as we are now moving in only one logical axis.
+
+Measured vibrations:
+
+   Before:
+
+   ![Vibrations Before](/wiki/pictures/core_xy_isolation_before.png)
+
+   After:
+
+   ![Vibrations After](/wiki/pictures/core_xy_isolation_after.png)
+
 As seen in the images above, by isolating the stepper motors we achieved much
-lower vibration levels.
+lower vibration levels as the second stepper driver is not spoiling our
+measurements anymore.
