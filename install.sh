@@ -18,12 +18,13 @@ fi
 
 g_shell_path=~/klipper/klippy/extras/
 g_shell_name=gcode_shell_command.py
-# Moving gcode_shell_command.py
+# Linking gcode_shell_command.py
 if [ -f "$g_shell_path/$g_shell_name" ]; then # Check file in folder
-    echo "Including $g_shell_name aborted, $g_shell_name already exists in $g_shell_path"
+    echo "Linking $g_shell_name aborted, $g_shell_name already exists in $g_shell_path"
 else
-    cp "$repo_path/$g_shell_name" $g_shell_path # copy
-    # echo "Copying $g_shell_name to $g_shell_path successfully complete"
+    # symlink
+    ln -s "$repo_path/extras/$g_shell_name" $g_shell_path
+    echo "Linking $g_shell_name to $g_shell_path successfully complete"
 fi
 
 cfg_name=chopper_tune.cfg
@@ -67,7 +68,7 @@ if [ -f "$blk_path" ]; then
           sed -i "\$a [update_manager $repo]" "$blk_path"
           sed -i "\$a type: git_repo" "$blk_path"
           sed -i "\$a path: $repo_path" "$blk_path"
-          sed -i "\$a origin: https://github.com/MRX8024/$repo.git" "$blk_path"
+          sed -i "\$a origin: https://github.com/eoyilmaz/$repo.git" "$blk_path"
           sed -i "\$a primary_branch: main" "$blk_path"
           sed -i "\$a managed_services: klipper" "$blk_path"
           # echo "Including [update_manager] to $blk_path successfully complete"
