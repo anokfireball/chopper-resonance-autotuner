@@ -8,6 +8,7 @@ requires = [
 authors = [
     {name = "Alexander Fedorov", email = "altzbox@gmail.com"},
     {name = "Maksim Bolgov", email = "maksim8024@gmail.com"},
+    {name = "Erkan Ozgur Yilmaz", email = "eoyilmaz@gmail.com"},
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -28,22 +29,22 @@ description = "A Klipper addon to measure resonance & optimize stepper motor par
 dynamic = ["version", "dependencies"]
 license = "GPL-3.0-or-later"
 maintainers = [
-    {name = "Maksim Bolgov", email = "maksim8024@gmail.com"},
+    {name = "Erkan Ozgur Yilmaz", email = "eoyilmaz@gmail.com"},
 ]
 name = "chopper-resonance-tuner"
 readme = "Readme.md"
 requires-python = ">= 3.9"
 
 [project.urls]
-"Home Page" = "https://github.com/MRX8024/chopper-resonance-tuner"
-GitHub = "https://github.com/MRX8024/chopper-resonance-tuner"
-Repository = "https://github.com/MRX8024/chopper-resonance-tuner.git"
-Download = "https://github.com/MRX8024/chopper-resonance-tuner/releases/"
+"Home Page" = "https://github.com/eoyilmaz/chopper-resonance-tuner"
+GitHub = "https://github.com/eoyilmaz/chopper-resonance-tuner"
+Repository = "https://github.com/eoyilmaz/chopper-resonance-tuner.git"
+Download = "https://github.com/eoyilmaz/chopper-resonance-tuner/releases/"
 
 [tool.distutils.bdist_rpm]
 doc-files = "LICENSE.txt README.md"
 fix-python = 1
-packager = "Maksim Bolgov <maksim8024@gmail.com>"
+packager = "Erkan Ozgur Yilmaz <eoyilmaz@gmail.com>"
 # post-install = "util/rpm_postinstall.sh"
 # post-uninstall = "util/rpm_postuninstall.sh"
 release = 1

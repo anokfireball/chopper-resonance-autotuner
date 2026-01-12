@@ -59,5 +59,3 @@ Provide information about the tested stepper motors.
 ### Further [instructions](/wiki/wiki.md), good luck!
 
 ### [Support](https://ko-fi.com/altzbox) project
-
-### Contacts - @altzbox @mrx8024 telegram / discord
