@@ -19,13 +19,16 @@ fi
 g_shell_path=~/klipper/klippy/extras/
 g_shell_name=gcode_shell_command.py
 # Linking gcode_shell_command.py
-if [ -f "$g_shell_path/$g_shell_name" ]; then # Check file in folder
-    echo "Linking $g_shell_name aborted, $g_shell_name already exists in $g_shell_path"
-else
-    # symlink
-    ln -s "$repo_path/extras/$g_shell_name" $g_shell_path
-    echo "Linking $g_shell_name to $g_shell_path successfully complete"
-fi
+# always force symlink
+ln -sf "$repo_path/extras/$g_shell_name" $g_shell_path
+echo "Linking $g_shell_name to $g_shell_path successfully complete"
+
+chopper_tune_path=~/klipper/klippy/extras/
+chopper_tune_name=chopper_tune.py
+# Linking chopper_tune.py
+# always force symlink
+ln -sf "$repo_path/extras/$chopper_tune_name" $chopper_tune_path
+echo "Linking $chopper_tune_name to $chopper_tune_path successfully complete"
 
 cfg_name=chopper_tune.cfg
 cfg_path=~/printer_data/config/
@@ -81,9 +84,7 @@ if [ -f "$blk_path" ]; then
     fi
 fi
 
-sudo apt update
-sudo apt-get install python3-venv libatlas-base-dev libopenblas-dev
-# Reuse system libraries
+# Create virtual environment and install dependencies
 python3 -m venv $repo_path/.venv
 source $repo_path/.venv/bin/activate
 pip install uv
