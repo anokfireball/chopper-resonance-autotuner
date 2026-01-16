@@ -123,7 +123,7 @@ def main() -> None:
         (name for name in os.listdir(DATA_FOLDER) if name.endswith("stand_still.csv")),
         None,
     )
-    with open(f"{DATA_FOLDER}{static_name}") as file:
+    with open(os.path.join(DATA_FOLDER, static_name)) as file:
         static_data = calc_static_magnitude(file)
         accel_chip = static_name.split("-")[0]
     # Calc magnitudes on registers
@@ -139,7 +139,7 @@ def main() -> None:
         if not name.endswith("__.csv"):
             continue
 
-        with open(f"{DATA_FOLDER}{name}") as file:
+        with open(os.path.join(DATA_FOLDER, name)) as file:
             curr, tbl, toff, hstrt, hend, tpfd, speed, freq, iteration = name.split(
                 "__"
             )[1].split("_")
