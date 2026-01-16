@@ -703,7 +703,7 @@ class ChopperTune:
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}")
         # Move to the initial position
         self.gcode.run_script_from_command(
-            f"G0 {axes[0]}{min_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
+            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
         )
         self.toolhead.wait_moves()
 
@@ -759,20 +759,20 @@ class ChopperTune:
                                                 # Movement
                                                 if axes[0] == "x":
                                                     self.gcode.run_script_from_command(
-                                                        f"G0 {axes[0]}{min_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
+                                                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
                                                     )
                                                 elif axes[0] == "y":
                                                     self.gcode.run_script_from_command(
-                                                        f"G0 {axes[0]}{min_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis - measurement_travel_distance} F{speed * 60}"
+                                                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis - measurement_travel_distance} F{speed * 60}"
                                                     )
                                             else:
                                                 self.gcode.run_script_from_command(
-                                                    f"G0 {axes[0]}{min_a_axis + measurement_travel_distance} F{speed * 60}"
+                                                    f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} F{speed * 60}"
                                                 )
 
                                         # G0 {axes[0]}{minAX} F{trv_speed}                    ; Move to the initial position
                                         self.gcode.run_script_from_command(
-                                            f"G0 {axes[0]}{min_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
+                                            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
                                         )
                                         self.toolhead.wait_moves()
 
