@@ -15,8 +15,8 @@ import glob
 import os
 import re
 import shutil
-import traceback
 import time
+import traceback
 from functools import wraps
 from typing import TYPE_CHECKING, Callable
 
@@ -102,7 +102,7 @@ class AccelerometerMeasure:
         Returns:
             str: The full path of the measurement file.
         """
-        return f"/tmp/{self.full_name}"
+        return f"/tmp/{self.full_name}"  # Klipper saves the measurement files in /tmp/ # noqa: S108
 
     def __enter__(self) -> Self:
         """Enter to the context."""
@@ -340,7 +340,7 @@ class ChopperTune:
         """Select main and secondary axis / stepper.
 
         Args:
-            axis (str): The to be tuned.
+            axes (str): The to be tuned.
 
         Returns:
             tuple[list[str], list[str], float, float, float, int, int]: A tuple
@@ -354,7 +354,6 @@ class ChopperTune:
                 - acceleration (int): The acceleration for the movement.
                 - travel_speed (int): The travel speed for idle movements.
         """
-
         if axes[0] == "z":
             min_a_axis = (
                 max(self.stepper_settings[f"stepper_{axes[0]}"]["position_min"], 0)
@@ -483,7 +482,7 @@ class ChopperTune:
             int: The stepper count of the requested axis.
         """
         axis_steppers = [
-            key for key in self.settings.keys() if key.startswith(f"stepper_{axis}")
+            key for key in self.settings if key.startswith(f"stepper_{axis}")
         ]
         return len(axis_steppers)
 
@@ -826,11 +825,14 @@ class ChopperTune:
             self.gcode.run_script_from_command("G28 X Y Z")
             self.toolhead.wait_moves()
 
-    def measure_accelerometer_noise(self, accel_chip) -> None:
+    def measure_accelerometer_noise(self, accel_chip) -> str:
         """Measure accelerometer noise.
 
         Args:
             accel_chip (str): Accelerometer chip name, i.e adxl345.
+
+        Returns:
+            str: The measurement data file path.
         """
         start_time = time.time()
         with AccelerometerMeasure(
@@ -844,10 +846,89 @@ class ChopperTune:
         self.gcode.run_script_from_command("G4 P1000")
         self.toolhead.wait_moves()
         # move the measurement file to the DATA_FOLDER
-        self.respond_info(f"Move data -> {accelerometer_measurement.move()}")
+        measurement_data_path = accelerometer_measurement.move()
+        self.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
             duration = time.time() - start_time
             self.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
+        return measurement_data_path
+
+    def perform_resonance_measurement(
+        self,
+        axes,
+        speed,
+        travel_distance,
+        travel_speed,
+        max_speed,
+        mid_a_axis,
+        mid_b_axis,
+        accel_chip,
+        name,
+        find_resonances,
+    ) -> str:
+        """Perform resonance measurement.
+
+        Args:
+            axes (list[str]): The main and secondary axis.
+            speed (float): The speed for the measurement.
+            travel_distance (float): The travel distance for the measurement.
+            travel_speed (float): The travel speed for idle movements.
+            max_speed (float): The maximum speed of the main axis.
+            mid_a_axis (float): The middle position of the main axis.
+            mid_b_axis (float): The middle position of the secondary axis.
+            accel_chip (str): Accelerometer chip name, i.e adxl345.
+            name (str): The name of the measurement.
+            find_resonances (bool): Sets the mode to resonance measurement
+                mode.
+
+        Returns:
+            str: The measurement data file path.
+        """
+        if find_resonances:
+            measurement_travel_distance = (travel_distance / max_speed) * speed
+            if self.kinematics == "corexy":
+                measurement_travel_distance = measurement_travel_distance * (2**0.5)
+            self.gcode.run_script_from_command(f"G4 P{self.delay}")
+            self.respond_info(
+                f"Speed {speed:0.2f} mm/s on {measurement_travel_distance:0.2f} mm"
+            )
+            self.toolhead.wait_moves()
+
+        # Start accel_chip data collection
+        with AccelerometerMeasure(
+            printer=self.printer,
+            gcode=self.gcode,
+            accel_chip=accel_chip,
+            name=name,
+        ) as accelerometer_measurement:
+            if self.kinematics == "corexy":
+                # isolate motors
+                # move in logical axis
+                if axes[0] == "x":
+                    self.gcode.run_script_from_command(
+                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
+                    )
+                elif axes[0] == "y":
+                    self.gcode.run_script_from_command(
+                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis - measurement_travel_distance} F{speed * 60}"
+                    )
+            else:
+                self.gcode.run_script_from_command(
+                    f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} F{speed * 60}"
+                )
+
+        # Move to the initial position
+        self.gcode.run_script_from_command(
+            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
+        )
+        self.toolhead.wait_moves()
+
+        # move the measurement file to the DATA_FOLDER
+        measurement_data_path = accelerometer_measurement.move()
+        self.respond_info(f"Accel. data: {measurement_data_path}")
+
+        return measurement_data_path
+
 
     def chopper_tune(
         self,
@@ -1059,68 +1140,24 @@ class ChopperTune:
                                 ):
                                     speed = speed / 100
                                     for i in range(iterations):
-                                        if find_resonances:
-                                            measurement_travel_distance = (
-                                                travel_distance / max_speed
-                                            ) * speed
-                                            if self.kinematics == "corexy":
-                                                measurement_travel_distance = (
-                                                    measurement_travel_distance
-                                                    * (2**0.5)
-                                                )
-                                            self.gcode.run_script_from_command(
-                                                f"G4 P{self.delay}"
-                                            )
-                                            self.respond_info(
-                                                f"Speed {speed:0.2f} mm/s on "
-                                                f"{measurement_travel_distance:0.2f} mm"
-                                            )
-                                            self.toolhead.wait_moves()
                                         name = (
                                             f"__{current}_{tbl}_{toff}_{hstrt_value}_"
                                             f"{hend_value}_{tpfd}_{speed * 100:.0f}_"
                                             f"{freq:.0f}_{i + 1}__"
                                         )
-
-                                        # Start accel_chip data collection
-                                        with AccelerometerMeasure(
-                                            printer=self.printer,
-                                            gcode=self.gcode,
-                                            accel_chip=accel_chip,
-                                            name=name,
-                                        ) as accelerometer_measurement:
-                                            if self.kinematics == "corexy":
-                                                # isolate motors
-                                                # move in logical axis
-                                                if axes[0] == "x":
-                                                    self.gcode.run_script_from_command(
-                                                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
-                                                    )
-                                                elif axes[0] == "y":
-                                                    self.gcode.run_script_from_command(
-                                                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis - measurement_travel_distance} F{speed * 60}"
-                                                    )
-                                            else:
-                                                self.gcode.run_script_from_command(
-                                                    f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} F{speed * 60}"
-                                                )
-
-                                        # Move to the initial position
-                                        self.gcode.run_script_from_command(
-                                            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
-                                        )
-                                        self.toolhead.wait_moves()
-
-                                        # move the measurement file to the DATA_FOLDER
-                                        self.respond_info(
-                                            "Move data -> "
-                                            f"{accelerometer_measurement.move()}"
+                                        self.perform_resonance_measurement(
+                                            axes,
+                                            speed,
+                                            travel_distance,
+                                            travel_speed,
+                                            max_speed,
+                                            mid_a_axis,
+                                            mid_b_axis,
+                                            accel_chip,
+                                            name,
+                                            find_resonances,
                                         )
 
-        if tpfd_min == -1 or tpfd_max == -1:
-            tpfd_min, tpfd_max = 0, 0
-
-        # TODO: replace with stepper.dwell() call
         self.gcode.run_script_from_command("G4 P500")
         self.gcode.run_script_from_command(f"G0 {axis}{mid_a_axis} F{travel_speed}")
         self.toolhead.wait_moves()
@@ -1214,7 +1251,7 @@ class ChopperTune:
                 find_resonances=find_resonances,
                 run_plotter=run_plotter,
             )
-        except Exception as e:
+        except Exception:
             self.respond_info(traceback.format_exc())
 
     @gcmd_grabber
