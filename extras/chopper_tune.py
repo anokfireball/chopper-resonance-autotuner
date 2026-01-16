@@ -580,7 +580,7 @@ class ChopperTune:
             tpfd_min (int): The TPFD min value.
             tpfd_max (int): The TPFD max value.
         """
-        if tpfd_min == -1 or tpfd_max != -1:
+        if tpfd_min != -1 or tpfd_max != -1:
             if driver in ["2240", "5160"]:
                 if tpfd_min < 0 or tpfd_max < 0:
                     self.printer.command_error("WARNING!!! Incorrect TPFD values")
@@ -952,18 +952,12 @@ class ChopperTune:
         min_a_axis,
     ) -> None:
         """Display process information."""
-        real_travel_distance = travel_distance
-        if self.kinematics == "corexy":
-            # for the stepper to move `travel_distance` amount
-            # in the logical axis, the real_travel_distance should be
-            # divided by sqrt(2) as the head is going to move in both axes
-            # in a corexy printer
-            real_travel_distance = travel_distance / (2**0.5)
         if find_resonances:
+            # This needs to be updated for CoreXY
             self.respond_info(
-                f"Final max travel distance = {real_travel_distance:.2f} mm, "
+                f"Final max travel distance = {travel_distance:.2f} mm, "
                 f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
+                f"traveling: {min_a_axis:.2f} --> {travel_distance + min_a_axis:.2f}"
             )
             self.respond_info(
                 "Start find resonances mode, "
@@ -977,9 +971,9 @@ class ChopperTune:
             )
         else:
             self.respond_info(
-                f"Final travel distance = {real_travel_distance:.2f} mm, "
+                f"Final travel distance = {travel_distance:.2f} mm, "
                 f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
+                f"traveling: {min_a_axis:.2f} --> {travel_distance + min_a_axis:.2f}"
             )
             self.respond_info(
                 "Start of register enumeration mode, "
@@ -1010,6 +1004,7 @@ class ChopperTune:
             str: The measurement data file path.
         """
         start_time = time.time()
+        self.toolhead.wait_moves()
         with AccelerometerMeasure(
             printer=self.printer,
             gcode=self.gcode,
@@ -1030,52 +1025,22 @@ class ChopperTune:
 
     def measure_vibrations(
         self,
-        axes,
-        speed,
-        travel_distance,
-        travel_speed,
-        max_speed,
-        mid_a_axis,
-        mid_b_axis,
-        accel_chip,
-        name,
-        find_resonances,
+        next_coord: Coord,
+        speed: float,
+        accel_chip: str,
+        name: str,
     ) -> str:
         """Perform vibration measurement.
 
         Args:
-            axes (list[str]): The main and secondary axis.
+            next_coord (Coord): The next coordinate to move to.
             speed (float): The speed for the measurement.
-            travel_distance (float): The travel distance for the measurement.
-            travel_speed (float): The travel speed for idle movements.
-            max_speed (float): The maximum speed of the main axis.
-            mid_a_axis (float): The middle position of the main axis.
-            mid_b_axis (float): The middle position of the secondary axis.
             accel_chip (str): Accelerometer chip name, i.e adxl345.
             name (str): The name of the measurement.
-            find_resonances (bool): Sets the mode to resonance measurement
-                mode.
 
         Returns:
             str: The measurement data file path.
         """
-        real_travel_distance = travel_distance
-        if self.kinematics == "corexy":
-            # for the stepper to move `travel_distance` amount
-            # in the logical axis, the real_travel_distance should be
-            # divided by sqrt(2) as the head is going to move in both axes
-            # in a corexy printer
-            real_travel_distance = real_travel_distance / (2**0.5)
-
-        if find_resonances:
-            # when finding resonances, keep the travel duration constant
-            real_travel_distance = travel_distance * (speed / max_speed)
-            self.gcode.run_script_from_command(f"G4 P{self.delay}")
-            self.respond_info(
-                f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
-            )
-            self.toolhead.wait_moves()
-
         # Start accel_chip data collection
         with AccelerometerMeasure(
             printer=self.printer,
@@ -1083,26 +1048,14 @@ class ChopperTune:
             accel_chip=accel_chip,
             name=name,
         ) as accelerometer_measurement:
-            if self.kinematics == "corexy":
-                # isolate motors
-                # move in logical axis
-                if axes[0] == "x":
-                    self.gcode.run_script_from_command(
-                        f"G0 {axes[0]}{mid_a_axis + real_travel_distance} {axes[1]}{mid_b_axis + real_travel_distance} F{speed * 60}"
-                    )
-                elif axes[0] == "y":
-                    self.gcode.run_script_from_command(
-                        f"G0 {axes[0]}{mid_a_axis + real_travel_distance} {axes[1]}{mid_b_axis - real_travel_distance} F{speed * 60}"
-                    )
-            else:
-                self.gcode.run_script_from_command(
-                    f"G0 {axes[0]}{mid_a_axis + real_travel_distance} F{speed * 60}"
-                )
+            self.gcode.run_script_from_command(
+                "G0 "
+                f"X{next_coord.x:0.2f} "
+                f"Y{next_coord.y:0.2f} "
+                f"Z{next_coord.z:0.2f} "
+                f"F{speed * 60}"
+            )
 
-        # Move to the initial position
-        self.gcode.run_script_from_command(
-            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
-        )
         self.toolhead.wait_moves()
 
         # move the measurement file to the DATA_FOLDER
@@ -1278,6 +1231,16 @@ class ChopperTune:
 
         # Check for axis homing
         self.home_if_needed()
+        home_pos = Coord(self.toolhead.get_position())
+
+        # Set steps of run_current
+        start_coord = None
+        if axes[0] == "x":
+            start_coord = Coord((mid_a_axis, mid_b_axis, home_pos.z))
+        elif axes[0] == "y":
+            start_coord = Coord((mid_b_axis, mid_a_axis, home_pos.z))
+        elif axes[0] == "z":
+            start_coord = Coord((mid_b_axis, home_pos.y, mid_a_axis))
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1285,31 +1248,27 @@ class ChopperTune:
         )
         # Move to the initial position
         self.gcode.run_script_from_command(
-            f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
+            "G0 "
+            f"X{start_coord.x:0.2f} "
+            f"Y{start_coord.y:0.2f} "
+            f"Z{start_coord.z:0.2f} "
+            f"F{travel_speed}"
         )
-        self.toolhead.wait_moves()
 
-        # Clean csv files
+        # Clean csv files while going to the initial position
         self.clean_csv_files()
+
+        # Wait for move to complete
+        self.toolhead.wait_moves()
 
         # Measure accelerometer noise
         self.measure_accelerometer_noise(accel_chip)
 
-        # Set steps of run_current
-        start_coord = None
-        if axes[0] == "x":
-            start_coord = (mid_a_axis, mid_b_axis, 0)
-        elif axes[0] == "y":
-            start_coord = (mid_b_axis, mid_a_axis, 0)
-        elif axes[0] == "z":
-            start_coord = (mid_b_axis, 0, mid_a_axis)
-
         coord_generator = CoordGenerator(
             axes=axes,
             kinematics=self.kinematics,
-            start_coord=Coord(start_coord)
+            start_coord=start_coord
         )
-
         for current in range(current_min, current_max + 1, self.current_change_step):
             self.apply_registers(steppers=steppers, field="curr", value=current)
             # Set tbl values
@@ -1352,17 +1311,27 @@ class ChopperTune:
                                             f"{hend_value}_{tpfd}_{speed * 100:.0f}_"
                                             f"{freq:.0f}_{i + 1}__"
                                         )
+
+                                        real_travel_distance = travel_distance
+                                        if find_resonances:
+                                            # when finding resonances,
+                                            # keep the travel duration constant
+                                            real_travel_distance = travel_distance * (speed / max_speed)
+                                            # self.gcode.run_script_from_command(f"G4 P{self.delay}")
+                                            self.respond_info(
+                                                f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
+                                            )
+                                            self.toolhead.wait_moves()
+
+                                        next_coord = coord_generator.next_position(
+                                            real_travel_distance
+                                        )
+
                                         self.measure_vibrations(
-                                            axes,
+                                            next_coord,
                                             speed,
-                                            travel_distance,
-                                            travel_speed,
-                                            max_speed,
-                                            mid_a_axis,
-                                            mid_b_axis,
                                             accel_chip,
                                             name,
-                                            find_resonances,
                                         )
 
         self.gcode.run_script_from_command("G4 P500")
