@@ -1111,6 +1111,20 @@ class ChopperTune:
 
         return measurement_data_path
 
+    def calculate_frequency(self, tbl, toff):
+        """Calculate frequency based on TBL and TOFF values.
+
+        Args:
+            tbl (int): The TBL value.
+            toff (int): The TOFF value.
+
+        Returns:
+            float: The calculated frequency.
+        """
+        return 1 / (
+            2 * (12 + 32 * toff) * 1 / (1000000 * self.fclk)
+            + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5**tbl)
+        )
 
     def chopper_tune(
         self,
@@ -1325,10 +1339,7 @@ class ChopperTune:
                                 self.gcode.run_script_from_command(
                                     f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
                                 )
-                                freq = 1 / (
-                                    2 * (12 + 32 * toff) * 1 / (1000000 * self.fclk)
-                                    + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5**tbl)
-                                )
+                                freq = self.calculate_frequency(tbl, toff)
                                 for speed in range(
                                     int(min_speed * 100),
                                     int(max_speed * 100) + 1,
