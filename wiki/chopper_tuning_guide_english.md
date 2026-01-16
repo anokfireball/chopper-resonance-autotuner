@@ -5,7 +5,7 @@
 
 ```shell
    cd ~
-   git clone https://github.com/MRX8024/chopper-resonance-tuner
+   git clone https://github.com/eoyilmaz/chopper-resonance-tuner
    bash ~/chopper-resonance-tuner/install.sh
 ```
 
