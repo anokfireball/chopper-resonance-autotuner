@@ -137,7 +137,7 @@ class AccelerometerMeasure:
             os.makedirs(DATA_FOLDER, exist_ok=True)
         destination = os.path.join(DATA_FOLDER, self.full_name)
         if os.path.exists(destination):
-            # remove the previous file
+            # remove the previous file
             os.remove(destination)
         if os.path.exists(self.full_path):
             shutil.move(self.full_path, destination)
@@ -158,11 +158,11 @@ class ChopperTune:
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
         self._settings = None
-        self.reactor : PollReactor = self.printer.get_reactor()
+        self.reactor: PollReactor = self.printer.get_reactor()
         self._driver_settings = {}
         self._stepper_settings = {}
         self.registers = {
-            "amount": 0,
+            "stepper_count": 0,
             "tbl": -1,
             "toff": -1,
             "hend": -1,
@@ -178,14 +178,11 @@ class ChopperTune:
         # config values
         self.debug = config.getboolean("debug", False)
         self.inset = config.getfloat("inset", 10)
-        self.current_change_step  = config.getint("current_change_step", 25)
+        self.current_change_step = config.getint("current_change_step", 25)
         self.measure_time = config.getint("measure_time", 1250)
         self.required_rpm = [
             float(f.strip())
-            for f in config.getlist(
-                "required_rpm",
-                [str(v) for v in [37.5, 150, 1.5]]
-            )
+            for f in config.getlist("required_rpm", [str(v) for v in [37.5, 150, 1.5]])
         ]
         self.delay = config.getfloat("delay", 500)
         self.fclk = config.getint("fclk", 12)
@@ -222,7 +219,7 @@ class ChopperTune:
             dict: The settings dictionary.
         """
         if self._settings is None:
-            self._settings = self.configfile.get_status(None)['settings']
+            self._settings = self.configfile.get_status(None)["settings"]
 
         return self._settings
 
@@ -247,9 +244,10 @@ class ChopperTune:
         if not self._driver_settings:
             for axis in "xyz":
                 driver, _ = self.detect_driver(axis)
-                self._driver_settings[f"stepper_{axis}"] = self.settings.get(f"tmc{driver} stepper_{axis}", {})
+                self._driver_settings[f"stepper_{axis}"] = self.settings.get(
+                    f"tmc{driver} stepper_{axis}", {}
+                )
         return self._driver_settings
-
 
     @property
     def stepper_settings(self) -> dict:
@@ -260,7 +258,9 @@ class ChopperTune:
         """
         if not self._stepper_settings:
             for axis in "xyz":
-                self._stepper_settings[f"stepper_{axis}"] = self.settings.get(f"stepper_{axis}", {})
+                self._stepper_settings[f"stepper_{axis}"] = self.settings.get(
+                    f"stepper_{axis}", {}
+                )
         return self._stepper_settings
 
     def clean_csv_files(self) -> None:
@@ -294,26 +294,24 @@ class ChopperTune:
 
         return None, None
 
-    def select_axes(self, axis):
-        """Select main and secondary axis / stepper.
+    def get_axes_and_steppers(self, axis):
+        """Get main and secondary axis / stepper.
 
         Args:
             axis (str): The to be tuned.
 
         Returns:
-            tuple[list[str], list[str], float, float, float, int, int]: A tuple
-                containing:
+            tuple[list[str], list[str]]: A tuple containing:
                 - axes (list[str]): The main and secondary axis.
                 - steppers (list[str]): The main and secondary stepper.
-                - min_a_axis (float): The minimum position of the main axis.
-                - max_a_axis (float): The maximum position of the main axis.
-                - mid_a_axis (float): The middle position of the main axis.
-                - mid_b_axis (float): The middle position of the secondary axis.
-                - acceleration (int): The acceleration for the movement.
-                - travel_speed (int): The travel speed for idle movements.
         """
         if axis not in ["x", "y", "z"]:
-            raise self.printer.command_error("WARNING!!! Incorrect direction")
+            raise self.printer.command_error(f"WARNING!!! Incorrect axis: {axis}")
+
+        if self.kinematics not in ["corexy", "cartesian"]:
+            raise self.printer.command_error(
+                f"WARNING!!! Unsupported kinematics: {self.kinematics}"
+            )
 
         if self.kinematics == "corexy":
             if axis in ["x", "y"]:
@@ -335,38 +333,82 @@ class ChopperTune:
             elif axis == "z":
                 axes = ["z", "x"]
                 steppers = ["stepper_z"]
-        else:
-            raise self.printer.command_error(
-                "WARNING!!! Script does not support your kinematics"
-            )
+
+        return axes, steppers
+
+    def determine_axis_configuration(self, axes):
+        """Select main and secondary axis / stepper.
+
+        Args:
+            axis (str): The to be tuned.
+
+        Returns:
+            tuple[list[str], list[str], float, float, float, int, int]: A tuple
+                containing:
+                - axes (list[str]): The main and secondary axis.
+                - steppers (list[str]): The main and secondary stepper.
+                - min_a_axis (float): The minimum position of the main axis.
+                - max_a_axis (float): The maximum position of the main axis.
+                - mid_a_axis (float): The middle position of the main axis.
+                - mid_b_axis (float): The middle position of the secondary axis.
+                - acceleration (int): The acceleration for the movement.
+                - travel_speed (int): The travel speed for idle movements.
+        """
 
         if axes[0] == "z":
-            min_a_axis = max(self.stepper_settings[f"stepper_{axes[0]}"]["position_min"], 0) + self.inset
+            min_a_axis = (
+                max(self.stepper_settings[f"stepper_{axes[0]}"]["position_min"], 0)
+                + self.inset
+            )
             acceleration = self.settings["printer"]["max_z_accel"]
             # Idle movements speed
             travel_speed = self.settings["printer"].get("max_z_velocity", 0) / 2 * 60
         else:
-            min_a_axis = self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + self.inset
+            min_a_axis = (
+                self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + self.inset
+            )
             acceleration = self.settings["printer"].get("max_accel")
             # Idle movements speed
             travel_speed = self.settings["printer"].get("max_velocity") / 2 * 60
 
-        max_a_axis = self.stepper_settings[f"stepper_{axes[0]}"]["position_max"] - self.inset
+        max_a_axis = (
+            self.stepper_settings[f"stepper_{axes[0]}"]["position_max"] - self.inset
+        )
         mid_a_axis = self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + (
-            (self.stepper_settings[f"stepper_{axes[0]}"]["position_max"] - self.stepper_settings[f"stepper_{axes[0]}"]["position_min"]) / 2
+            (
+                self.stepper_settings[f"stepper_{axes[0]}"]["position_max"]
+                - self.stepper_settings[f"stepper_{axes[0]}"]["position_min"]
+            )
+            / 2
         )
         mid_b_axis = self.stepper_settings[f"stepper_{axes[1]}"]["position_min"] + (
-            (self.stepper_settings[f"stepper_{axes[1]}"]["position_max"] - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]) / 2
+            (
+                self.stepper_settings[f"stepper_{axes[1]}"]["position_max"]
+                - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
+            )
+            / 2
         )
-        return axes, steppers, min_a_axis, max_a_axis, mid_a_axis, mid_b_axis, acceleration, travel_speed
+        return (
+            min_a_axis,
+            max_a_axis,
+            mid_a_axis,
+            mid_b_axis,
+            acceleration,
+            travel_speed,
+        )
 
-    def validate_tpfd_values(self, tpfd_min, tpfd_max, driver) -> None:
+    def validate_tpfd_values(
+        self,
+        driver: str,
+        tpfd_min: int,
+        tpfd_max: int,
+    ) -> None:
         """Validate the TPFD min and max values.
 
         Args:
+            driver (str): The stepper driver model.
             tpfd_min (int): The TPFD min value.
             tpfd_max (int): The TPFD max value.
-            driver (str): The stepper driver model.
         """
         if tpfd_min == -1 or tpfd_max != -1:
             if driver in ["2240", "5160"]:
@@ -376,6 +418,19 @@ class ChopperTune:
                 self.printer.command_error(
                     f"WARNING!!! TMC{driver} don't support register TPFD"
                 )
+
+    def reset_registers(self) -> None:
+        """Reset registers to default values."""
+        # Reset register values
+        self.registers = {
+            "stepper_count": 0,
+            "tbl": -1,
+            "toff": -1,
+            "hend": -1,
+            "hstrt": -1,
+            "tpfd": -1,
+            "curr": -1,
+        }
 
     def apply_registers(
         self,
@@ -395,38 +450,381 @@ class ChopperTune:
             return
 
         for stepper in steppers:
-            if self.debug:
-                self.respond_info(
-                    f"Setting {field.lower()} "
-                    f"from {self.registers[field]} to {value} on {stepper}"
-                )
-
-            if field.lower() != "curr":
-                self.gcode.run_script_from_command(
-                    f"SET_TMC_FIELD STEPPER={stepper} FIELD={field} VALUE={value}"
-                )
-            else:
-                self.gcode.run_script_from_command(
-                    f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                )
-
-            for count in range(1, self.registers["amount"] + 1):
+            for stepper_index in range(self.registers["stepper_count"]):
+                # stepper_x,
+                # stepper_y,
+                # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
+                # don't add index for the first stepper
+                stepper_index = str(stepper_index) if stepper_index > 0 else ""
                 if self.debug:
                     self.respond_info(
                         f"Setting {field.lower()} "
-                        f"from {self.registers[field]} to {value} on {stepper}{count}"
+                        f"from {self.registers[field]} to {value} on {stepper}{stepper_index}"
                     )
 
-                if field.lower() != "curr":
-                    self.gcode.run_script_from_command(
-                        f"SET_TMC_FIELD STEPPER={stepper}{count} FIELD={field} VALUE={value}"
-                    )
-                else:
+                if field.lower() == "curr":
                     self.gcode.run_script_from_command(
                         f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                     )
-
+                else:
+                    self.gcode.run_script_from_command(
+                        f"SET_TMC_FIELD STEPPER={stepper}{stepper_index} FIELD={field} VALUE={value}"
+                    )
+        # store the last applied value
         self.registers[field.lower()] = value
+
+    def get_stepper_count(self, axis):
+        """Get the stepper count of the given axis.
+
+        Args:
+            axis (str): One of ["x", "y", "z"].
+
+        Returns:
+            int: The stepper count of the requested axis.
+        """
+        axis_steppers = [
+            key for key in self.settings.keys() if key.startswith(f"stepper_{axis}")
+        ]
+        return len(axis_steppers)
+
+    def get_accelerometer_chip(self, accel_chip):
+        """Get accelerometer chip.
+
+        Args:
+            accel_chip (str): Accelerometer chip name, i.e adxl345.
+        """
+        # Select accelerometer
+        if accel_chip == "default":
+            resonance_tester = self.settings.get("resonance_tester", {})
+            if "accel_chip" in resonance_tester:
+                accel_chip = resonance_tester["accel_chip"]
+            else:
+                # Use Default accelerometer
+                accel_chip = DEFAULT_ACCEL_CHIP
+
+        self.respond_info(f"Selected {accel_chip} for accelerometer")
+        return accel_chip
+
+    def get_current_range(
+        self,
+        find_resonances: bool,
+        current_min: int | str,
+        current_max: int | str,
+        steppers,
+    ) -> tuple[int, int]:
+        """Get run current.
+
+        Args:
+            find_resonances (bool): Sets the mode to resonance measurement.
+            current_min (int | str): The minimum current value.
+            current_max (int | str): The maximum current value.
+            steppers (list[str]): The main and secondary stepper.
+
+        Returns:
+            tuple[int, int]: The minimum and maximum current values.
+        """
+        # Select run_current
+        run_current = int(
+            float(self.driver_settings[steppers[0]].get("run_current")) * 1000
+        )
+        if current_min == "default":
+            current_min = run_current
+            if self.debug:
+                self.respond_info(
+                    f"Set default run_current: {current_min} mA to run_current_min"
+                )
+        else:
+            current_min = int(current_min)
+
+        if current_max == "default":
+            current_max = run_current
+            if self.debug:
+                self.respond_info(
+                    f"Set default run_current: {current_max} mA to run_current_max"
+                )
+        else:
+            current_max = int(current_max)
+
+        if find_resonances:
+            current_max = current_min
+
+        return current_min, current_max
+
+    def get_default_stepper_parameters(
+        self,
+        steppers,
+    ):
+        """Return default stepper parameters.
+
+        Args:
+            steppers (list[str]): The main and secondary stepper.
+
+        Returns:
+            tuple[int, int, int, int, int, int, int, int]: The default stepper
+                parameters.
+        """
+        tbl_max = tbl_min = self.driver_settings[steppers[0]].get("driver_tbl")
+        toff_max = toff_min = self.driver_settings[steppers[0]].get("driver_toff")
+        hstrt_max = hstrt_min = self.driver_settings[steppers[0]].get("driver_hstrt")
+        hend_max = hend_min = self.driver_settings[steppers[0]].get("driver_hend")
+
+        return (
+            tbl_min,
+            tbl_max,
+            toff_min,
+            toff_max,
+            hstrt_min,
+            hstrt_max,
+            hend_min,
+            hend_max,
+        )
+
+    def configure_speed_limits(
+        self,
+        min_speed,
+        max_speed,
+        speed_change_step,
+        find_resonances,
+        measure_time,
+        axes,
+        steppers,
+        min_a_axis,
+        max_a_axis,
+        acceleration,
+    ):
+        """Configure speed limits.
+
+        Args:
+            min_speed (int | str): The in speed value, or can be set to
+                "default" to auto calculate the value over the required RPM
+                value.
+            max_speed (int | str): The max speed value, or can be set to
+                "default" to auto calculate the value over the required RPM
+                value.
+            speed_change_step (int | str): The step in each iteration the speed
+                will be increased to.
+            find_resonances (bool): Sets the mode to resonance measurement
+                mode.
+            measure_time (float): The measurement time in seconds.
+            axes (list[str]): The main and secondary axis.
+            steppers (list[str]): The main and secondary stepper.
+            min_a_axis (float): The minimum position of the main axis.
+            max_a_axis (float): The maximum position of the main axis.
+            acceleration (float): The acceleration for the movement.
+        """
+        # In vibration measurement mode, search and takes registers from printer.cfg, set speed range
+        if find_resonances:
+            rotation_dist = self.stepper_settings[steppers[0]].get("rotation_distance")
+            # get gear ratio
+            gear_ratio = self.stepper_settings[steppers[0]].get("gear_ratio")
+            if not gear_ratio:  # can be () or None
+                gear_ratio = "1:1"
+            gear_ratio = tuple(float(r) for r in gear_ratio.split(":"))
+            full_steps_per_rotation = self.stepper_settings[steppers[0]].get(
+                "full_steps_per_rotation", 200
+            )
+
+            steps_multiplier = (
+                full_steps_per_rotation
+                / 200
+                / (float(gear_ratio[0]) / float(gear_ratio[1]))
+                * rotation_dist
+                / 60
+            )
+
+            if min_speed == "default":
+                min_speed = float(self.required_rpm[0] * steps_multiplier)
+            else:
+                min_speed = float(min_speed)
+
+            if max_speed == "default":
+                max_required_mms = float(self.required_rpm[1] * steps_multiplier)
+                max_speed = min(
+                    (
+                        (
+                            -acceleration * measure_time
+                            + (
+                                (acceleration * measure_time) ** 2
+                                + 4 * acceleration * (max_a_axis - min_a_axis)
+                            )
+                            ** 0.5
+                        )
+                        / 2
+                    ),
+                    max_required_mms,
+                )
+            else:
+                max_speed = float(max_speed)
+
+            if speed_change_step == "default":
+                speed_change_step = self.required_rpm[2] * steps_multiplier
+            else:
+                speed_change_step = float(speed_change_step)
+        else:
+            # Protect not defined speed & converting str -> float
+            if min_speed == "default" or max_speed == "default":
+                raise self.printer.command_error(
+                    "WARNING!!! Resonance speed must be defined"
+                )
+            min_speed, max_speed = float(min_speed), float(max_speed)
+            speed_change_step = 1
+
+        # Check speed limit
+        if axes[0] == "z":
+            max_velocity = self.settings["printer"].get("max_z_velocity", 0)
+        else:
+            max_velocity = self.settings["printer"].get("max_velocity")
+
+        if max_speed > max_velocity:
+            raise self.printer.command_error(
+                f"WARNING!!! Required speed ({max_speed} mm/s) on axis ({axes[0]}) "
+                f"is faster than kinematics allow ({max_velocity}), "
+                f"please lower speed or increase speed limit in printer.cfg"
+            )
+
+        return min_speed, max_speed, speed_change_step
+
+    def calculate_travel_distance(
+        self,
+        axes,
+        min_a_axis,
+        max_a_axis,
+        max_speed,
+        acceleration,
+        measure_time,
+        travel_distance,
+    ) -> float:
+        """Calculate travel distance.
+
+        Args:
+            axes (list[str]): The main and secondary axis.
+            min_a_axis (float): The minimum position of the main axis.
+            max_a_axis (float): The maximum position of the main axis.
+            max_speed (float): The maximum speed of the main axis.
+            acceleration (float): The acceleration of the main axis.
+            measure_time (float): The measurement time in seconds.
+            travel_distance (int | str): The travel distance, or can be set to
+                "default" to calculate the travel distance with the
+                `measure_time`, `max_speed` and `accel_decel_distance`.
+
+        Returns:
+            float: The calculated travel distance.
+        """
+        # Calculate min required toolhead travel distance from speed,
+        # acceleration and time
+        accel_decel_distance = max_speed**2 / acceleration
+        auto_travel_distance = accel_decel_distance + (max_speed * measure_time)
+        if self.debug:
+            self.respond_info(
+                f"Acceleration & deceleration zone = {accel_decel_distance} mm"
+            )
+            self.respond_info(
+                f"Auto calculated min required travel distance = {auto_travel_distance} mm"
+            )
+
+        # Protect exceeding axis limits & calculate travel distance
+        if travel_distance == "default":
+            if min_a_axis + auto_travel_distance > max_a_axis:
+                raise self.printer.command_error(
+                    f"WARNING!!! Required travel distance on axis ({axes[0]}) "
+                    f"({auto_travel_distance:.2f} mm) is longer than kinematics "
+                    "allows, please lower speed or increase acceleration"
+                )
+
+            travel_distance = auto_travel_distance
+        else:
+            travel_distance = int(travel_distance)
+            if min_a_axis + travel_distance > max_a_axis:
+                travel_distance = max_a_axis - min_a_axis
+                if travel_distance < auto_travel_distance:
+                    raise self.printer.command_error(
+                        f"WARNING!!! Travel distance on axis ({axes[0]}) is "
+                        "less than it should be, please increase acceleration "
+                        "or lower speed"
+                    )
+                if travel_distance > auto_travel_distance:
+                    self.respond_info(
+                        f"WARNING!!! Travel distance on axis ({axes[0]}) "
+                        "is longer than kinematics allows, lowering..."
+                    )
+            elif travel_distance < auto_travel_distance:
+                travel_distance = auto_travel_distance
+                if min_a_axis + auto_travel_distance > max_a_axis:
+                    raise self.printer.command_error(
+                        f"WARNING!!! Travel distance on axis ({axes[0]}) "
+                        f"is less than required ({auto_travel_distance:.2f} mm), "
+                        "and longer than kinematics allows, please lower "
+                        "speed or increase acceleration"
+                    )
+
+        return travel_distance
+
+    def display_process_info(
+        self,
+        current_min,
+        current_max,
+        tbl_min,
+        tbl_max,
+        toff_min,
+        toff_max,
+        hstrt_min,
+        hstrt_max,
+        hend_min,
+        hend_max,
+        tpfd_min,
+        tpfd_max,
+        min_speed,
+        max_speed,
+        speed_change_step,
+        iterations,
+        travel_distance,
+        find_resonances,
+        min_a_axis,
+    ) -> None:
+        """Display process information."""
+        real_travel_distance = travel_distance
+        if self.kinematics == "corexy":
+            real_travel_distance = travel_distance * (2**0.5)
+        if find_resonances:
+            self.respond_info(
+                f"Final max travel distance = {real_travel_distance:.2f} mm, "
+                f"position min = {min_a_axis:.2f}, "
+                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
+            )
+            self.respond_info(
+                "Start find resonances mode, "
+                f"speed: {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
+                f"{speed_change_step:.2f} step "
+                f"current={current_min} mA "
+                f"TBL={tbl_min} "
+                f"TOFF={toff_min} "
+                f"HSTRT={hstrt_min} "
+                f"HEND={hend_min}"
+            )
+        else:
+            self.respond_info(
+                f"Final travel distance = {real_travel_distance:.2f} mm, "
+                f"position min = {min_a_axis:.2f}, "
+                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
+            )
+            self.respond_info(
+                "Start of register enumeration mode, "
+                f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
+                f"current: {current_min} --> {current_max} mA "
+                f"iterations={iterations} "
+                f"TBL: {tbl_min} --> {tbl_max} "
+                f"TOFF: {toff_min} --> {toff_max} "
+                f"HSTRT: {hstrt_min} --> {hstrt_max} "
+                f"HEND: {hend_min} --> {hend_max} "
+                f"TPFD: {tpfd_min} --> {tpfd_max}"
+            )
+
+    def home_if_needed(self) -> None:
+        """Home if not homed."""
+        event_time = self.printer.get_reactor().monotonic()
+        if "xyz" not in self.toolhead.get_status(event_time)["homed_axes"]:
+            self.gcode.run_script_from_command("G28 X Y Z")
+            self.toolhead.wait_moves()
 
     def measure_accelerometer_noise(self, accel_chip) -> None:
         """Measure accelerometer noise.
@@ -435,16 +833,21 @@ class ChopperTune:
             accel_chip (str): Accelerometer chip name, i.e adxl345.
         """
         start_time = time.time()
-        with AccelerometerMeasure(printer=self.printer, gcode=self.gcode, accel_chip=accel_chip, name="stand_still") as accelerometer_measurement:
+        with AccelerometerMeasure(
+            printer=self.printer,
+            gcode=self.gcode,
+            accel_chip=accel_chip,
+            name="stand_still",
+        ) as accelerometer_measurement:
             self.gcode.run_script_from_command("G4 P5000")
         # Wait for another 1 second for the whole data to be written
         self.gcode.run_script_from_command("G4 P1000")
         self.toolhead.wait_moves()
         # move the measurement file to the DATA_FOLDER
-        final_destination = accelerometer_measurement.move()
-        self.respond_info(f"Moved measurement data to: {final_destination}")
-        duration = time.time() - start_time
-        self.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
+        self.respond_info(f"Move data -> {accelerometer_measurement.move()}")
+        if self.debug:
+            duration = time.time() - start_time
+            self.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
 
     def chopper_tune(
         self,
@@ -512,195 +915,97 @@ class ChopperTune:
             bool: True if the command runs without any errors, False otherwise.
         """
         measure_time = self.measure_time / 1000
+        self.reset_registers()
+        # Find the steppers count of the main axis
+        self.registers["stepper_count"] = self.get_stepper_count(axis)
+
         driver, sense_resistor = self.detect_driver(stepper=axis)
-        axes, steppers, min_a_axis, max_a_axis, mid_a_axis, mid_b_axis, acceleration, travel_speed = self.select_axes(axis)
+        self.validate_tpfd_values(driver, tpfd_min, tpfd_max)
 
-        self.validate_tpfd_values(tpfd_min, tpfd_max, driver)
+        axes, steppers = self.get_axes_and_steppers(axis)
 
-        # Reset register values
-        self.registers = {
-            "amount": 0,
-            "tbl": -1,
-            "toff": -1,
-            "hend": -1,
-            "hstrt": -1,
-            "tpfd": -1,
-            "curr": -1,
-        }
+        (
+            min_a_axis,
+            max_a_axis,
+            mid_a_axis,
+            mid_b_axis,
+            acceleration,
+            travel_speed,
+        ) = self.determine_axis_configuration(axes)
 
-        # Select count of one axis steppers
-        for mot in range(8):
-            if (f"stepper_{axes[0]}{mot}") in self.settings:
-                self.registers["amount"] = mot
-                if (f'stepper_{axes[0]}{mot + 1}') not in self.settings:
-                    self.respond_info(f"Selected {mot + 1}wd configuration")
-            elif mot == 1:
-                self.respond_info("Selected 1wd configuration")
+        accel_chip = self.get_accelerometer_chip(accel_chip)
 
-        # Select accelerometer
-        if accel_chip == "default":
-            resonance_tester = self.settings.get("resonance_tester", {})
-            if "accel_chip" in resonance_tester:
-                accel_chip = resonance_tester["accel_chip"]
-            else:
-                # Use Default accelerometer
-                accel_chip = DEFAULT_ACCEL_CHIP
+        current_min, current_max = self.get_current_range(
+            find_resonances, current_min, current_max, steppers
+        )
 
-        self.respond_info(f"Selected {accel_chip} for accelerometer")
-
-        # Select run_current
-        run_current = int(float(self.driver_settings[steppers[0]].get("run_current")) * 1000)
-        if current_min == "default":
-            current_min = run_current
-            if self.debug:
-                self.respond_info(f"Set default run_current: {current_min} mA to run_current_min")
-        else:
-            current_min = int(current_min)
-
-        if current_max == "default":
-            current_max = run_current
-            if self.debug:
-                self.respond_info(f"Set default run_current: {current_max} mA to run_current_max")
-        else:
-            current_max = int(current_max)
-
-        # In vibration measurement mode, search and takes registers from printer.cfg, set speed range
         if find_resonances:
-            current_max = current_min
-            tbl_max = tbl_min = self.driver_settings[steppers[0]].get("driver_tbl")
-            toff_max = toff_min = self.driver_settings[steppers[0]].get("driver_toff")
-            hstrt_max = hstrt_min = self.driver_settings[steppers[0]].get("driver_hstrt")
-            hend_max = hend_min = self.driver_settings[steppers[0]].get("driver_hend")
-            rotation_dist = self.stepper_settings[steppers[0]].get("rotation_distance")
-            # get gear ratio
-            gear_ratio = self.stepper_settings[steppers[0]].get("gear_ratio")
-            if not gear_ratio:  # can be () or None
-                gear_ratio = "1:1"
-            gear_ratio = tuple(float(r) for r in gear_ratio.split(":"))
-            full_steps_per_rotation = self.stepper_settings[steppers[0]].get("full_steps_per_rotation", 200)
+            # In vibration measurement mode,
+            # search and take registers from printer.cfg
+            (
+                tbl_min,
+                tbl_max,
+                toff_min,
+                toff_max,
+                hstrt_min,
+                hstrt_max,
+                hend_min,
+                hend_max,
+            ) = self.get_default_stepper_parameters(steppers)
 
-            steps_multiplier = full_steps_per_rotation / 200 / (float(gear_ratio[0]) / float(gear_ratio[1])) * rotation_dist / 60
+        (min_speed, max_speed, speed_change_step) = self.configure_speed_limits(
+            min_speed,
+            max_speed,
+            speed_change_step,
+            find_resonances,
+            measure_time,
+            axes,
+            steppers,
+            min_a_axis,
+            max_a_axis,
+            acceleration,
+        )
 
-            if min_speed == "default":
-                min_speed = float(self.required_rpm[0] * steps_multiplier)
-            else:
-                min_speed = float(min_speed)
-
-            if max_speed == "default":
-                max_required_mms = float(self.required_rpm[1] * steps_multiplier)
-                max_speed = min(((-acceleration * measure_time + ((acceleration * measure_time) ** 2 + 4 * acceleration * (max_a_axis - min_a_axis)) ** 0.5) / 2), max_required_mms)
-            else:
-                max_speed = float(max_speed)
-
-            if speed_change_step == "default":
-                speed_change_step = self.required_rpm[2] * steps_multiplier
-            else:
-                speed_change_step = float(speed_change_step)
-        else:
-            # Protect not defined speed & converting str -> float
-            if min_speed == "default" or max_speed == "default":
-                raise self.printer.command_error(
-                    "WARNING!!! Resonance speed must be defined"
-                )
-            min_speed, max_speed = float(min_speed), float(max_speed)
-            speed_change_step = 1
-
-        # Check speed limit
-        if max_speed > travel_speed / 30:
-            raise self.printer.command_error(
-                f"WARNING!!! Required speed ({max_speed} mm/s) on axis ({axes[0]}) "
-                "is faster than kinematics allow, please lower speed or increase "
-                "speed limit in printer.cfg"
-            )
-
-        # Calculate min required toolhead travel distance from speed, acceleration and time
-        accel_decel_distance = max_speed ** 2 / acceleration
-        auto_travel_distance = accel_decel_distance + (max_speed * measure_time)
-        if self.debug:
-            self.respond_info(f"Acceleration & deceleration zone = {accel_decel_distance} mm")
-            self.respond_info(f"Auto calculated min required travel distance = {auto_travel_distance} mm")
-
-        # Protect exceeding axis limits & calculate travel distance
-        if travel_distance == "default":
-            if min_a_axis + auto_travel_distance > max_a_axis:
-                raise self.printer.command_error(
-                    f"WARNING!!! Required travel distance on axis ({axes[0]}) "
-                    f"({auto_travel_distance:.2f} mm) is longer than kinematics "
-                    "allows, please lower speed or increase acceleration"
-                )
-
-            travel_distance = auto_travel_distance
-        else:
-            travel_distance = int(travel_distance)
-            if min_a_axis + travel_distance > max_a_axis:
-                travel_distance = max_a_axis - min_a_axis
-                if travel_distance < auto_travel_distance:
-                    raise self.printer.command_error(
-                        f"WARNING!!! Travel distance on axis ({axes[0]}) is "
-                        "less than it should be, please increase acceleration "
-                        "or lower speed"
-                    )
-                if travel_distance > auto_travel_distance:
-                    self.respond_info(
-                        f"WARNING!!! Travel distance on axis ({axes[0]}) "
-                        "is longer than kinematics allows, lowering..."
-                    )
-            elif travel_distance < auto_travel_distance:
-                travel_distance = auto_travel_distance
-                if min_a_axis + auto_travel_distance > max_a_axis:
-                    raise self.printer.command_error(
-                        f"WARNING!!! Travel distance on axis ({axes[0]}) "
-                        f"is less than required ({auto_travel_distance:.2f} mm), "
-                        "and longer than kinematics allows, please lower "
-                        "speed or increase acceleration"
-                    )
+        travel_distance = self.calculate_travel_distance(
+            axes,
+            min_a_axis,
+            max_a_axis,
+            max_speed,
+            acceleration,
+            measure_time,
+            travel_distance,
+        )
 
         # Info message
-        real_travel_distance = travel_distance
-        if self.kinematics == "corexy":
-            real_travel_distance = travel_distance * (2 ** 0.5)
-        if find_resonances:
-            self.respond_info(
-                f"Final max travel distance = {real_travel_distance:.2f} mm, "
-                f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
-            )
-            self.respond_info(
-                "Start find resonances mode, "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
-                f"{speed_change_step:.2f} step "
-                f"current={current_min} mA "
-                f"TBL={tbl_min} "
-                f"TOFF={toff_min} "
-                f"HSTRT={hstrt_min} "
-                f"HEND={hend_min}"
-            )
-        else:
-            self.respond_info(
-                f"Final travel distance = {real_travel_distance:.2f} mm, "
-                f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {real_travel_distance + min_a_axis:.2f}"
-            )
-            self.respond_info(
-                "Start of register enumeration mode, "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
-                f"current: {current_min} --> {current_max} mA "
-                f"iterations={iterations} "
-                f"TBL: {tbl_min} --> {tbl_max} "
-                f"TOFF: {toff_min} --> {toff_max} "
-                f"HSTRT: {hstrt_min} --> {hstrt_max} "
-                f"HEND: {hend_min} --> {hend_max} "
-                f"TPFD: {tpfd_min} --> {tpfd_max}"
-            )
+        self.display_process_info(
+            current_min,
+            current_max,
+            tbl_min,
+            tbl_max,
+            toff_min,
+            toff_max,
+            hstrt_min,
+            hstrt_max,
+            hend_min,
+            hend_max,
+            tpfd_min,
+            tpfd_max,
+            min_speed,
+            max_speed,
+            speed_change_step,
+            iterations,
+            travel_distance,
+            find_resonances,
+            min_a_axis,
+        )
 
         # Check for axis homing
-        event_time = self.printer.get_reactor().monotonic()
-        if "xyz" not in self.toolhead.get_status(event_time)['homed_axes']:
-            self.gcode.run_script_from_command("G28 X Y Z")
-            self.toolhead.wait_moves()
+        self.home_if_needed()
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
-        self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}")
+        self.gcode.run_script_from_command(
+            f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
+        )
         # Move to the initial position
         self.gcode.run_script_from_command(
             f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
@@ -710,7 +1015,7 @@ class ChopperTune:
         # Clean csv files
         self.clean_csv_files()
 
-        # Measure accelerometer noise
+        # Measure accelerometer noise
         self.measure_accelerometer_noise(accel_chip)
 
         # Set steps of run_current
@@ -727,36 +1032,66 @@ class ChopperTune:
                             if (hend_value + hstrt_value) > hstrt_hend_max:
                                 continue
                             # Set hend, and hstrt values
-                            self.apply_registers(steppers=steppers, field="hend", value=hend_value)
-                            self.apply_registers(steppers=steppers, field="hstrt", value=hstrt_value)
+                            self.apply_registers(
+                                steppers=steppers, field="hend", value=hend_value
+                            )
+                            self.apply_registers(
+                                steppers=steppers, field="hstrt", value=hstrt_value
+                            )
                             # Set tpfd values
                             for tpfd in range(tpfd_min, tpfd_max + 1):
                                 if tpfd_min != -1 and tpfd_max != -1:
-                                    self.apply_registers(steppers=steppers, field="tpfd", value=tpfd)
+                                    self.apply_registers(
+                                        steppers=steppers, field="tpfd", value=tpfd
+                                    )
                                 # Dump TMC settings
                                 self.gcode.run_script_from_command(
                                     f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
                                 )
-                                freq = 1 / ( 2 * ( 12 + 32 * toff) * 1 / (1000000 * self.fclk) + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5 ** tbl) )
-                                for speed in range(int(min_speed * 100), int(max_speed * 100) + 1, int(speed_change_step * 100)):
+                                freq = 1 / (
+                                    2 * (12 + 32 * toff) * 1 / (1000000 * self.fclk)
+                                    + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5**tbl)
+                                )
+                                for speed in range(
+                                    int(min_speed * 100),
+                                    int(max_speed * 100) + 1,
+                                    int(speed_change_step * 100),
+                                ):
                                     speed = speed / 100
                                     for i in range(iterations):
                                         if find_resonances:
-                                            # self.respond_info(f"travel_distance (before): {travel_distance}")
-                                            measurement_travel_distance  = (travel_distance / max_speed) * speed
+                                            measurement_travel_distance = (
+                                                travel_distance / max_speed
+                                            ) * speed
                                             if self.kinematics == "corexy":
-                                                measurement_travel_distance  = measurement_travel_distance * (2 ** 0.5)
-                                            self.gcode.run_script_from_command(f"G4 P{self.delay}")
+                                                measurement_travel_distance = (
+                                                    measurement_travel_distance
+                                                    * (2**0.5)
+                                                )
+                                            self.gcode.run_script_from_command(
+                                                f"G4 P{self.delay}"
+                                            )
                                             self.respond_info(
-                                                f"Speed {speed:0.2f} mm/s on {measurement_travel_distance:0.2f} mm"
+                                                f"Speed {speed:0.2f} mm/s on "
+                                                f"{measurement_travel_distance:0.2f} mm"
                                             )
                                             self.toolhead.wait_moves()
-                                        name = f"__{current}_{tbl}_{toff}_{hstrt_value}_{hend_value}_{tpfd}_{speed * 100:.0f}_{freq:.0f}_{i+1}__"
+                                        name = (
+                                            f"__{current}_{tbl}_{toff}_{hstrt_value}_"
+                                            f"{hend_value}_{tpfd}_{speed * 100:.0f}_"
+                                            f"{freq:.0f}_{i + 1}__"
+                                        )
 
                                         # Start accel_chip data collection
-                                        with AccelerometerMeasure(printer=self.printer, gcode=self.gcode, accel_chip=accel_chip, name=name) as accelerometer_measurement:
-                                            if self.kinematics == "corexy": # isolate motors
-                                                # Movement
+                                        with AccelerometerMeasure(
+                                            printer=self.printer,
+                                            gcode=self.gcode,
+                                            accel_chip=accel_chip,
+                                            name=name,
+                                        ) as accelerometer_measurement:
+                                            if self.kinematics == "corexy":
+                                                # isolate motors
+                                                # move in logical axis
                                                 if axes[0] == "x":
                                                     self.gcode.run_script_from_command(
                                                         f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
@@ -770,15 +1105,17 @@ class ChopperTune:
                                                     f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} F{speed * 60}"
                                                 )
 
-                                        # G0 {axes[0]}{minAX} F{trv_speed}                    ; Move to the initial position
+                                        # Move to the initial position
                                         self.gcode.run_script_from_command(
                                             f"G0 {axes[0]}{mid_a_axis} {axes[1]}{mid_b_axis} F{travel_speed}"
                                         )
                                         self.toolhead.wait_moves()
 
                                         # move the measurement file to the DATA_FOLDER
-                                        final_destination = accelerometer_measurement.move()
-                                        self.respond_info(f"{final_destination}")
+                                        self.respond_info(
+                                            "Move data -> "
+                                            f"{accelerometer_measurement.move()}"
+                                        )
 
         if tpfd_min == -1 or tpfd_max == -1:
             tpfd_min, tpfd_max = 0, 0
@@ -798,6 +1135,8 @@ class ChopperTune:
         self.respond_info(
             f"To run parser manually; type - RUN_SHELL_COMMAND CMD=chop_tune PARAMS='iterations={iterations} driver={driver} sense_resistor={sense_resistor}"
         )
+
+        return True
 
     @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
@@ -843,19 +1182,13 @@ class ChopperTune:
                 "1": True,
                 "false": False,
                 "true": True,
-            }.get(
-                gcmd.get("FIND_RESONANCES", "false").lower(),
-                False
-            )
+            }.get(gcmd.get("FIND_RESONANCES", "false").lower(), False)
             run_plotter = {
                 "0": False,
                 "1": True,
                 "false": False,
                 "true": True,
-            }.get(
-                gcmd.get("RUN_PLOTTER", "true").lower(),
-                True
-            )
+            }.get(gcmd.get("RUN_PLOTTER", "true").lower(), True)
 
             return self.chopper_tune(
                 axis=axis,
@@ -879,12 +1212,10 @@ class ChopperTune:
                 travel_distance=travel_distance,
                 accel_chip=accel_chip,
                 find_resonances=find_resonances,
-                run_plotter=run_plotter
+                run_plotter=run_plotter,
             )
         except Exception as e:
-            self.respond_info(
-                traceback.format_exc()
-            )
+            self.respond_info(traceback.format_exc())
 
     @gcmd_grabber
     def cmd_chopper_tune_debug(self, gcmd: GCodeCommand) -> bool:
@@ -897,7 +1228,10 @@ class ChopperTune:
             bool: True if command completed successfully, False otherwise.
         """
         try:
-            self.respond_info(f"required_rpm: {self.required_rpm}")
+            # self.respond_info(f"required_rpm: {self.required_rpm}")
+            self.respond_info(f"x stepper count: {self.get_stepper_count('x')}")
+            self.respond_info(f"y stepper count: {self.get_stepper_count('y')}")
+            self.respond_info(f"z stepper count: {self.get_stepper_count('z')}")
         except Exception as e:
             self.respond_info(traceback.format_exc(e))
 
