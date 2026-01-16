@@ -12,12 +12,13 @@ This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
 import glob
+import operator
 import os
 import re
 import shutil
 import time
 import traceback
-from functools import wraps
+from functools import reduce, wraps
 from typing import TYPE_CHECKING, Callable
 
 # Klipper Imports
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     else:
         from typing_extensions import Self
 
-IS_DIGIT = re.compile("[0-9\-.]+")
+IS_DIGIT = re.compile(r"[0-9\-.]+")
 
 DEFAULT_ACCEL_CHIP = "adxl345"
 RESULTS_FOLDER = os.path.expanduser(
@@ -144,6 +145,164 @@ class AccelerometerMeasure:
         else:
             self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
         return destination
+
+
+class Coord(list):
+    """Custom "list" class for coordinates - add easy access to x, y, z components.
+
+    The difference between the gcode.Coord is that, this class allows attribute
+    setting.
+
+    Args:
+        t: A list or tuple.
+    """
+    __slots__ = ()
+    def __new__(cls, t):
+        if len(t) < 4:
+            t = list(tuple(t) + (0,) * (3 - len(t)))
+        return list.__new__(cls, t)
+
+    @property
+    def x(self) -> float:
+        return self[0]
+
+    @x.setter
+    def x(self, x) -> None:
+        self[0] = x
+
+    @property
+    def y(self) -> float:
+        return self[1]
+
+    @y.setter
+    def y(self, y) -> None:
+        self[1] = y
+
+    @property
+    def z(self) -> float:
+        return self[2]
+
+    @z.setter
+    def z(self, z) -> None:
+        self[2] = z
+
+    def length(self) -> float:
+        """Return the vector length."""
+        return float(reduce(lambda x, y: x + y**2, [0, *self])**0.5)
+
+    def unitize(self) -> Self:
+        """Make self unit vector."""
+        other = self / self.length()
+        for i in range(len(self)):
+            self[i] = other[i]
+        return self
+
+    def __add__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x + other[0], self.y + other[1], self.z + other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i + other for i in self])
+        else:
+            return super().__add__(other)
+
+    def __iadd__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x + other[0], self.y + other[1], self.z + other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i + other for i in self])
+        else:
+            return super().__iadd__(other)
+
+    def __sub__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x - other[0], self.y - other[1], self.z - other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i - other for i in self])
+        else:
+            return super().__add__(other)
+
+    def __mul__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x * other[0], self.y * other[1], self.z * other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i * other for i in self])
+        else:
+            return super().__mul__(other)
+
+    def __imul__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x * other[0], self.y * other[1], self.z * other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i * other for i in self])
+        else:
+            return super().__imul__(other)
+
+    def __truediv__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x / other[0], self.y / other[1], self.z / other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i / other for i in self])
+        else:
+            return super().__truediv__(other)
+
+    def __itruediv__(self, other):
+        if isinstance(other, (Coord, list, tuple)):
+            return Coord((self.x / other[0], self.y / other[1], self.z / other[2]))
+        elif isinstance(other, (int, float)):
+            return Coord([i / other for i in self])
+        else:
+            return super().__itruediv__(other)
+
+
+class CoordGenerator:
+    """A class to generate coordinates/positions for chopper tuning."""
+
+    def __init__(
+        self,
+        axes: tuple[str, str],
+        kinematics: str,
+        start_coord: None | Coord = None
+    ) -> None:
+        self.axes = axes
+        self.kinematics = kinematics
+        self.direction = self.get_initial_direction()
+        if start_coord is None:
+            start_coord = Coord((0, 0, 0))
+        self.current_coord = start_coord
+
+    def get_initial_direction(self) -> Coord:
+        """Return the initial direction based on the axes and kinematics."""
+        initial_direction = Coord((0, 0, 0))
+        if self.axes[0] == "x":
+            if self.kinematics == "corexy":
+                initial_direction = Coord((1, 1, 0)).unitize()
+            else:
+                initial_direction = Coord((1, 0, 0))
+        elif self.axes[0] == "y":
+            if self.kinematics == "corexy":
+                initial_direction = Coord((1, -1, 0)).unitize()
+            else:
+                initial_direction = Coord((0, 1, 0))
+        elif self.axes[0] == "z":
+            initial_direction = Coord((0, 0, 1))
+        return initial_direction
+
+    def switch_direction(self):
+        """Switch direction."""
+        self.direction *= (-1, -1, -1)
+
+    def next_position(self, travel_distance: float) -> float:
+        """Get the next position.
+
+        Args:
+            travel_distance (float): The travel distance.
+
+        Returns:
+            float: The next position.
+        """
+        self.current_coord += (self.direction * travel_distance)
+        self.switch_direction()
+        return self.current_coord
 
 
 class ChopperTune:
@@ -637,7 +796,7 @@ class ChopperTune:
                 min_speed = float(min_speed)
 
             if max_speed == "default":
-                max_required_mms = float(self.required_rpm[1] * steps_multiplier)
+                max_required_speed = float(self.required_rpm[1] * steps_multiplier)
                 max_speed = min(
                     (
                         (
@@ -650,7 +809,7 @@ class ChopperTune:
                         )
                         / 2
                     ),
-                    max_required_mms,
+                    max_required_speed,
                 )
             else:
                 max_speed = float(max_speed)
@@ -783,7 +942,11 @@ class ChopperTune:
         """Display process information."""
         real_travel_distance = travel_distance
         if self.kinematics == "corexy":
-            real_travel_distance = travel_distance * (2**0.5)
+            # for the stepper to move `travel_distance` amount
+            # in the logical axis, the real_travel_distance should be
+            # divided by sqrt(2) as the head is going to move in both axes
+            # in a corexy printer
+            real_travel_distance = travel_distance / (2**0.5)
         if find_resonances:
             self.respond_info(
                 f"Final max travel distance = {real_travel_distance:.2f} mm, "
@@ -853,7 +1016,7 @@ class ChopperTune:
             self.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
         return measurement_data_path
 
-    def perform_resonance_measurement(
+    def measure_vibrations(
         self,
         axes,
         speed,
@@ -866,7 +1029,7 @@ class ChopperTune:
         name,
         find_resonances,
     ) -> str:
-        """Perform resonance measurement.
+        """Perform vibration measurement.
 
         Args:
             axes (list[str]): The main and secondary axis.
@@ -884,13 +1047,20 @@ class ChopperTune:
         Returns:
             str: The measurement data file path.
         """
+        real_travel_distance = travel_distance
+        if self.kinematics == "corexy":
+            # for the stepper to move `travel_distance` amount
+            # in the logical axis, the real_travel_distance should be
+            # divided by sqrt(2) as the head is going to move in both axes
+            # in a corexy printer
+            real_travel_distance = real_travel_distance / (2**0.5)
+
         if find_resonances:
-            measurement_travel_distance = (travel_distance / max_speed) * speed
-            if self.kinematics == "corexy":
-                measurement_travel_distance = measurement_travel_distance * (2**0.5)
+            # when finding resonances, keep the travel duration constant
+            real_travel_distance = travel_distance * (speed / max_speed)
             self.gcode.run_script_from_command(f"G4 P{self.delay}")
             self.respond_info(
-                f"Speed {speed:0.2f} mm/s on {measurement_travel_distance:0.2f} mm"
+                f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
             )
             self.toolhead.wait_moves()
 
@@ -906,15 +1076,15 @@ class ChopperTune:
                 # move in logical axis
                 if axes[0] == "x":
                     self.gcode.run_script_from_command(
-                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis + measurement_travel_distance} F{speed * 60}"
+                        f"G0 {axes[0]}{mid_a_axis + real_travel_distance} {axes[1]}{mid_b_axis + real_travel_distance} F{speed * 60}"
                     )
                 elif axes[0] == "y":
                     self.gcode.run_script_from_command(
-                        f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} {axes[1]}{mid_b_axis - measurement_travel_distance} F{speed * 60}"
+                        f"G0 {axes[0]}{mid_a_axis + real_travel_distance} {axes[1]}{mid_b_axis - real_travel_distance} F{speed * 60}"
                     )
             else:
                 self.gcode.run_script_from_command(
-                    f"G0 {axes[0]}{mid_a_axis + measurement_travel_distance} F{speed * 60}"
+                    f"G0 {axes[0]}{mid_a_axis + real_travel_distance} F{speed * 60}"
                 )
 
         # Move to the initial position
@@ -1100,6 +1270,20 @@ class ChopperTune:
         self.measure_accelerometer_noise(accel_chip)
 
         # Set steps of run_current
+        start_coord = None
+        if axes[0] == "x":
+            start_coord = (mid_a_axis, mid_b_axis, 0)
+        elif axes[0] == "y":
+            start_coord = (mid_b_axis, mid_a_axis, 0)
+        elif axes[0] == "z":
+            start_coord = (mid_b_axis, 0, mid_a_axis)
+
+        coord_generator = CoordGenerator(
+            axes=axes,
+            kinematics=self.kinematics,
+            start_coord=Coord(start_coord)
+        )
+
         for current in range(current_min, current_max + 1, self.current_change_step):
             self.apply_registers(steppers=steppers, field="curr", value=current)
             # Set tbl values
@@ -1145,7 +1329,7 @@ class ChopperTune:
                                             f"{hend_value}_{tpfd}_{speed * 100:.0f}_"
                                             f"{freq:.0f}_{i + 1}__"
                                         )
-                                        self.perform_resonance_measurement(
+                                        self.measure_vibrations(
                                             axes,
                                             speed,
                                             travel_distance,
