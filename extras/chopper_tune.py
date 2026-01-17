@@ -612,7 +612,7 @@ class ChopperTune:
 
         return axes, steppers
 
-    def calculate_axis_limits(
+    def get_axis_limits(
         self, axes: list[str]
     ) -> tuple[float, float, float, float]:
         """Select main and secondary axis / stepper.
@@ -640,20 +640,14 @@ class ChopperTune:
         a_axis_max = (
             self.stepper_settings[f"stepper_{axes[0]}"]["position_max"] - self.inset
         )
-        a_axis_mid = self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + (
-            (
-                self.stepper_settings[f"stepper_{axes[0]}"]["position_max"]
-                - self.stepper_settings[f"stepper_{axes[0]}"]["position_min"]
-            )
-            / 2
-        )
-        b_axis_mid = self.stepper_settings[f"stepper_{axes[1]}"]["position_min"] + (
-            (
-                self.stepper_settings[f"stepper_{axes[1]}"]["position_max"]
-                - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
-            )
-            / 2
-        )
+        a_axis_mid = (
+            self.stepper_settings[f"stepper_{axes[0]}"]["position_max"]
+            + self.stepper_settings[f"stepper_{axes[0]}"]["position_min"]
+        ) / 2
+        b_axis_mid = (
+            self.stepper_settings[f"stepper_{axes[1]}"]["position_max"]
+            - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
+        ) / 2
         return a_axis_min, a_axis_max, a_axis_mid, b_axis_mid
 
     def get_travel_speed_and_acceleration(self, axes: list[str]) -> tuple[float, float]:
@@ -1321,11 +1315,8 @@ class ChopperTune:
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
-        a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.calculate_axis_limits(
-            axes
-        )
+        a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.get_axis_limits(axes)
         acceleration, travel_speed = self.get_travel_speed_and_acceleration(axes)
-
         accel_chip = self.get_accelerometer_chip(accel_chip)
 
         current_min, current_max = self.get_current_range(
@@ -1396,12 +1387,18 @@ class ChopperTune:
         self.home()
         home_pos = Coord(self.toolhead.get_position())
 
-        # Set steps of run_current
+        # Get initial position and direction
         initial_position = {
             "x": Coord((a_axis_mid, b_axis_mid, home_pos.z)),
             "y": Coord((b_axis_mid, a_axis_mid, home_pos.z)),
             "z": Coord((b_axis_mid, home_pos.y, a_axis_mid)),
         }[axes[0]]
+        initial_direction = self.get_initial_direction(axes)
+
+        # if this is not running in "find resonances" mode,
+        # move away from the middle exactly half or a travel distance
+        if not find_resonances:
+            initial_position -= initial_direction * (travel_distance / 2)
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1427,7 +1424,7 @@ class ChopperTune:
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
-            direction=self.get_initial_direction(axes), start_coord=initial_position
+            direction=initial_direction, start_coord=initial_position
         )
         for current in range(current_min, current_max + 1, self.current_change_step):
             self.apply_registers(steppers=steppers, field="curr", value=current)
