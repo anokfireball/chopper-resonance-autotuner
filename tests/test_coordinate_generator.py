@@ -38,18 +38,18 @@ def test_next_position_core_xy():
     )
     assert generator.direction is not None
 
-    pos1 = generator.next_position(1.0)
+    pos1 = generator.next(1.0)
     assert isinstance(pos1, Coord)
     assert pos1.x == pytest.approx((2**0.5)/2)
     assert pos1.y == pytest.approx((2**0.5)/2)
     assert pos1.z == pytest.approx(0)
 
-    pos2 = generator.next_position(10.0)
+    pos2 = generator.next(10.0)
     assert pos2.x == pytest.approx((2**0.5) / 2 - (10*(2**0.5) / 2))
     assert pos2.y == pytest.approx((2**0.5) / 2 - (10*(2**0.5) / 2))
     assert pos2.z == pytest.approx(0)
 
-    pos3 = generator.next_position(9.0)
+    pos3 = generator.next(9.0)
     assert pos3.x == pytest.approx(0)
     assert pos3.y == pytest.approx(0)
     assert pos3.z == pytest.approx(0)
