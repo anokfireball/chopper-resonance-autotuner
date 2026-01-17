@@ -32,7 +32,7 @@ And if for some reason not, then install [manually](/wiki/manual_install_en.md).
    1. We determine the resonant speeds by entering the command:
 
       ```G-code
-      CHOPPER_TUNE FIND_VIBRATIONS=1
+      CHOPPER_TUNE FIND_RESONANCES=1
       ```
 
       into the web terminal.
@@ -162,11 +162,11 @@ minimum required ones.
    detected if one is specified in the `resonance_tester` configuration,
    otherwise, without specifying will be applied `adxl345`.
 
-9. `FIND_VIBRATIONS`
+9. `FIND_RESONANCES`
 
-   Mode for measuring vibrations from speed, useful in order to remove resonant
-   speeds from everyday printing, as for step 3.1 of this article, applies
-   registers from printer configuration. Values: `(True / False), (1 / 0)`
+   Mode to measure resonances at different speeds, so that the measurement is
+   done at the most resonant speed and the system finds the best register
+   values for the lowest vibrations/noise. Values: `(True / False), (1 / 0)`
 
 10. `RUN_PLOTTER`
 
