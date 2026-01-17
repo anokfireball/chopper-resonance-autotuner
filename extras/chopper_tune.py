@@ -355,38 +355,54 @@ class Coord(list):
 
 
 class CoordGenerator:
-    """A class to generate coordinates/positions for chopper tuning."""
+    """A class to generate coordinates/positions for chopper tuning.
+
+    Args:
+        direction (Coord | list | tuple): The initial direction.
+        start_coord (None | Coord): The starting coordinate.
+    """
 
     def __init__(
-        self, axes: tuple[str, str], kinematics: str, start_coord: None | Coord = None
+        self, direction: Coord | list | tuple, start_coord: None | Coord = None
     ) -> None:
-        self.axes = axes
-        self.kinematics = kinematics
-        self.direction = self.get_initial_direction()
+        self._direction = None
+        self.direction = direction
         if start_coord is None:
             start_coord = Coord((0, 0, 0))
         self.current_coord = start_coord
 
-    def get_initial_direction(self) -> Coord:
-        """Return the initial direction based on the axes and kinematics.
+    @property
+    def direction(self) -> Coord:
+        """Return the direction of this CoordGenerator.
 
         Returns:
-            Coord: The initial direction.
+            Coord: The direction of this CoordGenerator.
         """
-        initial_direction = Coord((1, 0, 0))
-        if self.axes[0] == "x":
-            if self.kinematics == "corexy":
-                initial_direction = Coord((1, 1, 0)).unitize()
-            else:
-                initial_direction = Coord((1, 0, 0))
-        elif self.axes[0] == "y":
-            if self.kinematics == "corexy":
-                initial_direction = Coord((1, -1, 0)).unitize()
-            else:
-                initial_direction = Coord((0, 1, 0))
-        elif self.axes[0] == "z":
-            initial_direction = Coord((0, 0, 1))
-        return initial_direction
+        return self._direction
+
+    @direction.setter
+    def direction(self, direction: Coord | list | float) -> None:
+        """Set the direction attribute value.
+
+        Args:
+            direction (Coord | list | float): The direction value.
+
+        Raises:
+            TypeError: If the direction is not a list, tuple or Coord instance.
+        """
+        if not isinstance(direction, (list, tuple, Coord)):
+            raise TypeError(
+                f"direction should be a list, tuple or a Coord instance, not "
+                f"{direction.__class__.__name__}: '{direction}'"
+            )
+
+        if isinstance(direction, (list, tuple)):
+            direction = Coord(direction)
+
+        if direction.length() == 0:
+            raise ValueError("direction length cannot be zero.")
+
+        self._direction = direction.unitize()
 
     def switch_direction(self) -> None:
         """Switch direction."""
@@ -596,7 +612,7 @@ class ChopperTune:
 
         return axes, steppers
 
-    def determine_axis_configuration(
+    def calculate_axis_limits(
         self, axes: list[str]
     ) -> tuple[float, float, float, float]:
         """Select main and secondary axis / stepper.
@@ -606,44 +622,39 @@ class ChopperTune:
 
         Returns:
             tuple[float, float, float, float]: A tuple containing:
-                - min_a_axis (float): The minimum position of the main axis.
-                - max_a_axis (float): The maximum position of the main axis.
-                - mid_a_axis (float): The middle position of the main axis.
-                - mid_b_axis (float): The middle position of the secondary axis.
+                - a_axis_min (float): The minimum position of the main axis.
+                - a_axis_max (float): The maximum position of the main axis.
+                - a_axis_mid (float): The middle position of the main axis.
+                - b_axis_mid (float): The middle position of the secondary axis.
         """
         if axes[0] == "z":
-            min_a_axis = (
+            a_axis_min = (
                 max(self.stepper_settings[f"stepper_{axes[0]}"]["position_min"], 0)
                 + self.inset
             )
         else:
-            min_a_axis = (
+            a_axis_min = (
                 self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + self.inset
             )
 
-        max_a_axis = (
+        a_axis_max = (
             self.stepper_settings[f"stepper_{axes[0]}"]["position_max"] - self.inset
         )
-        mid_a_axis = self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + (
+        a_axis_mid = self.stepper_settings[f"stepper_{axes[0]}"]["position_min"] + (
             (
                 self.stepper_settings[f"stepper_{axes[0]}"]["position_max"]
                 - self.stepper_settings[f"stepper_{axes[0]}"]["position_min"]
             )
             / 2
         )
-        mid_b_axis = self.stepper_settings[f"stepper_{axes[1]}"]["position_min"] + (
+        b_axis_mid = self.stepper_settings[f"stepper_{axes[1]}"]["position_min"] + (
             (
                 self.stepper_settings[f"stepper_{axes[1]}"]["position_max"]
                 - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
             )
             / 2
         )
-        return (
-            min_a_axis,
-            max_a_axis,
-            mid_a_axis,
-            mid_b_axis,
-        )
+        return a_axis_min, a_axis_max, a_axis_mid, b_axis_mid
 
     def get_travel_speed_and_acceleration(self, axes: list[str]) -> tuple[float, float]:
         """Select main and secondary axis / stepper.
@@ -861,8 +872,8 @@ class ChopperTune:
         measure_time: float,
         axes: list[str],
         steppers: list[str],
-        min_a_axis: float,
-        max_a_axis: float,
+        a_axis_min: float,
+        a_axis_max: float,
         acceleration: float,
     ) -> tuple[float, float, float]:
         """Configure speed limits.
@@ -881,8 +892,8 @@ class ChopperTune:
             measure_time (float): The measurement time in seconds.
             axes (list[str]): The main and secondary axis.
             steppers (list[str]): The main and secondary stepper.
-            min_a_axis (float): The minimum position of the main axis.
-            max_a_axis (float): The maximum position of the main axis.
+            a_axis_min (float): The minimum position of the main axis.
+            a_axis_max (float): The maximum position of the main axis.
             acceleration (float): The acceleration for the movement.
 
         Returns:
@@ -924,7 +935,7 @@ class ChopperTune:
                             -acceleration * measure_time
                             + (
                                 (acceleration * measure_time) ** 2
-                                + 4 * acceleration * (max_a_axis - min_a_axis)
+                                + 4 * acceleration * (a_axis_max - a_axis_min)
                             )
                             ** 0.5
                         )
@@ -966,8 +977,8 @@ class ChopperTune:
     def calculate_travel_distance(
         self,
         axes: list[str],
-        min_a_axis: float,
-        max_a_axis: float,
+        a_axis_min: float,
+        a_axis_max: float,
         max_speed: float,
         acceleration: float,
         measure_time: float,
@@ -977,8 +988,8 @@ class ChopperTune:
 
         Args:
             axes (list[str]): The main and secondary axis.
-            min_a_axis (float): The minimum position of the main axis.
-            max_a_axis (float): The maximum position of the main axis.
+            a_axis_min (float): The minimum position of the main axis.
+            a_axis_max (float): The maximum position of the main axis.
             max_speed (float): The maximum speed of the main axis.
             acceleration (float): The acceleration of the main axis.
             measure_time (float): The measurement time in seconds.
@@ -1004,7 +1015,7 @@ class ChopperTune:
 
         # Protect exceeding axis limits & calculate travel distance
         if travel_distance == "default":
-            if min_a_axis + auto_travel_distance > max_a_axis:
+            if a_axis_min + auto_travel_distance > a_axis_max:
                 raise self.printer.command_error(
                     f"WARNING!!! Required travel distance on axis ({axes[0]}) "
                     f"({auto_travel_distance:.2f} mm) is longer than kinematics "
@@ -1014,8 +1025,8 @@ class ChopperTune:
             travel_distance = auto_travel_distance
         else:
             travel_distance = int(travel_distance)
-            if min_a_axis + travel_distance > max_a_axis:
-                travel_distance = max_a_axis - min_a_axis
+            if a_axis_min + travel_distance > a_axis_max:
+                travel_distance = a_axis_max - a_axis_min
                 if travel_distance < auto_travel_distance:
                     raise self.printer.command_error(
                         f"WARNING!!! Travel distance on axis ({axes[0]}) is "
@@ -1029,7 +1040,7 @@ class ChopperTune:
                     )
             elif travel_distance < auto_travel_distance:
                 travel_distance = auto_travel_distance
-                if min_a_axis + auto_travel_distance > max_a_axis:
+                if a_axis_min + auto_travel_distance > a_axis_max:
                     raise self.printer.command_error(
                         f"WARNING!!! Travel distance on axis ({axes[0]}) "
                         f"is less than required ({auto_travel_distance:.2f} mm), "
@@ -1057,7 +1068,7 @@ class ChopperTune:
         max_speed: float,
         speed_change_step: float,
         iterations: int,
-        min_a_axis: float,
+        a_axis_min: float,
         travel_distance: float,
         find_resonances: bool,
     ) -> None:
@@ -1080,7 +1091,7 @@ class ChopperTune:
             max_speed (float): The maximum speed value.
             speed_change_step (float): The speed change step value.
             iterations (int): The number of iterations.
-            min_a_axis (float): The minimum position of the main axis.
+            a_axis_min (float): The minimum position of the main axis.
             travel_distance (float): The travel distance value.
             find_resonances (bool): Sets the mode to resonance measurement.
         """
@@ -1088,8 +1099,8 @@ class ChopperTune:
             # This needs to be updated for CoreXY
             self.respond_info(
                 f"Final max travel distance = {travel_distance:.2f} mm, "
-                f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {travel_distance + min_a_axis:.2f}"
+                f"position min = {a_axis_min:.2f}, "
+                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
                 "Start find resonances mode, "
@@ -1104,14 +1115,14 @@ class ChopperTune:
         else:
             self.respond_info(
                 f"Final travel distance = {travel_distance:.2f} mm, "
-                f"position min = {min_a_axis:.2f}, "
-                f"traveling: {min_a_axis:.2f} --> {travel_distance + min_a_axis:.2f}"
+                f"position min = {a_axis_min:.2f}, "
+                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
                 "Start of register enumeration mode, "
                 f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
                 f"current: {current_min} --> {current_max} mA "
-                f"iterations={iterations} "
+                f"iterations: {iterations} "
                 f"TBL: {tbl_min} --> {tbl_max} "
                 f"TOFF: {toff_min} --> {toff_max} "
                 f"HSTRT: {hstrt_min} --> {hstrt_max} "
@@ -1119,12 +1130,12 @@ class ChopperTune:
                 f"TPFD: {tpfd_min} --> {tpfd_max}"
             )
 
-    def home_if_needed(self) -> None:
-        """Home if not homed."""
-        event_time = self.printer.get_reactor().monotonic()
-        if "xyz" not in self.toolhead.get_status(event_time)["homed_axes"]:
-            self.gcode.run_script_from_command("G28 X Y Z")
-            self.toolhead.wait_moves()
+    def home(self) -> None:
+        """Home."""
+        # event_time = self.printer.get_reactor().monotonic()
+        # if "xyz" not in self.toolhead.get_status(event_time)["homed_axes"]:
+        self.gcode.run_script_from_command("G28 X Y Z")
+        self.toolhead.wait_moves()
 
     def measure_accelerometer_noise(self, accel_chip: str) -> str:
         """Measure accelerometer noise.
@@ -1211,6 +1222,30 @@ class ChopperTune:
             + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5**tbl)
         )
 
+    def get_initial_direction(self, axes: list[str]) -> Coord:
+        """Return the initial direction based on the axes and kinematics.
+
+        Args:
+            axes (list[str]): The main and secondary axis.
+
+        Returns:
+            Coord: The initial direction.
+        """
+        initial_direction = Coord((1, 0, 0))
+        if axes[0] == "x":
+            if self.kinematics == "corexy":
+                initial_direction = Coord((1, 1, 0)).unitize()
+            else:
+                initial_direction = Coord((1, 0, 0))
+        elif axes[0] == "y":
+            if self.kinematics == "corexy":
+                initial_direction = Coord((1, -1, 0)).unitize()
+            else:
+                initial_direction = Coord((0, 1, 0))
+        elif axes[0] == "z":
+            initial_direction = Coord((0, 0, 1))
+        return initial_direction
+
     def chopper_tune(
         self,
         axis: str,
@@ -1286,14 +1321,10 @@ class ChopperTune:
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
-        (
-            min_a_axis,
-            max_a_axis,
-            mid_a_axis,
-            mid_b_axis,
-            acceleration,
-            travel_speed,
-        ) = self.determine_axis_configuration(axes)
+        a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.calculate_axis_limits(
+            axes
+        )
+        acceleration, travel_speed = self.get_travel_speed_and_acceleration(axes)
 
         accel_chip = self.get_accelerometer_chip(accel_chip)
 
@@ -1323,15 +1354,15 @@ class ChopperTune:
             measure_time,
             axes,
             steppers,
-            min_a_axis,
-            max_a_axis,
+            a_axis_min,
+            a_axis_max,
             acceleration,
         )
 
         travel_distance = self.calculate_travel_distance(
             axes,
-            min_a_axis,
-            max_a_axis,
+            a_axis_min,
+            a_axis_max,
             max_speed,
             acceleration,
             measure_time,
@@ -1356,23 +1387,21 @@ class ChopperTune:
             max_speed,
             speed_change_step,
             iterations,
-            min_a_axis,
+            a_axis_min,
             travel_distance,
             find_resonances,
         )
 
-        # Check for axis homing
-        self.home_if_needed()
+        # Home regardless of previous homing state
+        self.home()
         home_pos = Coord(self.toolhead.get_position())
 
         # Set steps of run_current
-        start_coord = None
-        if axes[0] == "x":
-            start_coord = Coord((mid_a_axis, mid_b_axis, home_pos.z))
-        elif axes[0] == "y":
-            start_coord = Coord((mid_b_axis, mid_a_axis, home_pos.z))
-        elif axes[0] == "z":
-            start_coord = Coord((mid_b_axis, home_pos.y, mid_a_axis))
+        initial_position = {
+            "x": Coord((a_axis_mid, b_axis_mid, home_pos.z)),
+            "y": Coord((b_axis_mid, a_axis_mid, home_pos.z)),
+            "z": Coord((b_axis_mid, home_pos.y, a_axis_mid)),
+        }[axes[0]]
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1381,9 +1410,9 @@ class ChopperTune:
         # Move to the initial position
         self.gcode.run_script_from_command(
             "G0 "
-            f"X{start_coord.x:0.2f} "
-            f"Y{start_coord.y:0.2f} "
-            f"Z{start_coord.z:0.2f} "
+            f"X{initial_position.x:0.2f} "
+            f"Y{initial_position.y:0.2f} "
+            f"Z{initial_position.z:0.2f} "
             f"F{travel_speed}"
         )
 
@@ -1396,8 +1425,9 @@ class ChopperTune:
         # Measure accelerometer noise
         self.measure_accelerometer_noise(accel_chip)
 
+        # Create the coordinate generator
         coord_generator = CoordGenerator(
-            axes=axes, kinematics=self.kinematics, start_coord=start_coord
+            direction=self.get_initial_direction(axes), start_coord=initial_position
         )
         for current in range(current_min, current_max + 1, self.current_change_step):
             self.apply_registers(steppers=steppers, field="curr", value=current)
@@ -1467,7 +1497,7 @@ class ChopperTune:
                                         )
 
         self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(f"G0 {axis}{mid_a_axis} F{travel_speed}")
+        self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{travel_speed}")
         self.toolhead.wait_moves()
         if run_plotter:
             self.respond_info("Magnitude graphs generation...")
