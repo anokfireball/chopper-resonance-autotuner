@@ -12,6 +12,7 @@ This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
 import glob
+import multiprocessing
 import os
 import re
 import shutil
@@ -140,24 +141,35 @@ class AccelerometerMeasure:
         if os.path.exists(destination):
             # remove the previous file
             os.remove(destination)
-        # TODO: Make this asynchronous with timeout
-        start_time = time.time()
-        max_wait_time = 10  # seconds
-        prev_size = -1
-        curr_size = (
-            0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
-        )
-        while not os.path.exists(self.full_path) or prev_size != curr_size:
-            time.sleep(0.1)
+
+        def do_threaded_move() -> None:
+            """Move the measurement file in another thread.
+
+            ...so the main process is not blocked.
+            """
+            start_time = time.time()
+            max_wait_time = 10  # seconds
+            prev_size = -1
+            curr_size = (
+                0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
+            )
+            while not os.path.exists(self.full_path) or prev_size != curr_size:
+                time.sleep(0.1)
+                if os.path.exists(self.full_path):
+                    prev_size = curr_size
+                    curr_size = os.path.getsize(self.full_path)
+                if (time.time() - start_time) > max_wait_time:
+                    break
+
             if os.path.exists(self.full_path):
-                prev_size = curr_size
-                curr_size = os.path.getsize(self.full_path)
-            if (time.time() - start_time) > max_wait_time:
-                break
-        if os.path.exists(self.full_path):
-            shutil.move(self.full_path, destination)
-        else:
-            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
+                shutil.move(self.full_path, destination)
+            else:
+                self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
+
+        move_proc = multiprocessing.Process(target=do_threaded_move)
+        move_proc.daemon = True
+        move_proc.start()
+
         return destination
 
 
