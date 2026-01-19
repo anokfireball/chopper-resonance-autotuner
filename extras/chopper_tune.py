@@ -73,7 +73,7 @@ def gcmd_grabber(f: Callable) -> Callable:
     return wrapped_f
 
 
-class MeasureMode(IntEnum):
+class MeasurementMode(IntEnum):
     """Integer enumerator to specify the current measurement mode."""
 
     Resonances = 0
@@ -83,29 +83,29 @@ class MeasureMode(IntEnum):
         """Return the enum name for str().
 
         Returns:
-            str: The name as the string representation of this MeasureMode.
+            str: The name as the string representation of this MeasurementMode.
         """
         return self.name
 
     __str__ = __repr__
 
     @classmethod
-    def to_mode(cls, mode: int | str | MeasureMode) -> MeasureMode:
-        """Convert the given mode value to a MeasureMode enum.
+    def to_mode(cls, mode: int | str | MeasurementMode) -> MeasurementMode:
+        """Convert the given mode value to a MeasurementMode enum.
 
         Args:
-            mode (int | str | MeasureMode]): The value to convert to a MeasureMode.
+            mode (int | str | MeasurementMode]): The value to convert to a MeasurementMode.
 
         Raises:
             TypeError: Input value type is invalid.
             ValueError: Input value is invalid.
 
         Returns:
-            MeasureMode: The enum.
+            MeasurementMode: The enum.
         """
-        if not isinstance(mode, (int, str, MeasureMode)):
+        if not isinstance(mode, (int, str, MeasurementMode)):
             raise TypeError(
-                "mode should be a MeasureMode enum value or one of {}, "
+                "mode should be a MeasurementMode enum value or one of {}, "
                 "not {}: '{}'".format(
                     [m.name for m in cls] + [m.value for m in cls],
                     mode.__class__.__name__,
@@ -118,7 +118,7 @@ class MeasureMode(IntEnum):
             mode_lower_case = mode.lower()
             if mode_lower_case not in mode_name_lut:
                 raise ValueError(
-                    "mode should be a MeasureMode enum value or one of {}, "
+                    "mode should be a MeasurementMode enum value or one of {}, "
                     "not '{}'".format(
                         [m.name for m in cls] + [m.value for m in cls],
                         mode,
