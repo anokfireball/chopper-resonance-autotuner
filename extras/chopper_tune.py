@@ -18,6 +18,7 @@ import re
 import shutil
 import time
 import traceback
+from enum import IntEnum
 from functools import reduce, wraps
 from typing import TYPE_CHECKING, Callable
 
@@ -70,6 +71,63 @@ def gcmd_grabber(f: Callable) -> Callable:
         return result
 
     return wrapped_f
+
+
+class MeasureMode(IntEnum):
+    """Integer enumerator to specify the current measurement mode."""
+
+    Resonances = 0
+    Vibrations = 1
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation of this MeasureMode.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+    @classmethod
+    def to_mode(cls, mode: int | str | MeasureMode) -> MeasureMode:
+        """Convert the given mode value to a MeasureMode enum.
+
+        Args:
+            mode (int | str | MeasureMode]): The value to convert to a MeasureMode.
+
+        Raises:
+            TypeError: Input value type is invalid.
+            ValueError: Input value is invalid.
+
+        Returns:
+            MeasureMode: The enum.
+        """
+        if not isinstance(mode, (int, str, MeasureMode)):
+            raise TypeError(
+                "mode should be a MeasureMode enum value or one of {}, "
+                "not {}: '{}'".format(
+                    [m.name for m in cls] + [m.value for m in cls],
+                    mode.__class__.__name__,
+                    mode,
+                )
+            )
+        if isinstance(mode, str):
+            mode_name_lut = dict([(m.name.lower(), m.name) for m in cls])
+            mode_name_lut.update(dict([(m.value, m.name) for m in cls]))
+            mode_lower_case = mode.lower()
+            if mode_lower_case not in mode_name_lut:
+                raise ValueError(
+                    "mode should be a MeasureMode enum value or one of {}, "
+                    "not '{}'".format(
+                        [m.name for m in cls] + [m.value for m in cls],
+                        mode,
+                    )
+                )
+
+            return cls.__members__[mode_name_lut[mode_lower_case]]
+
+        return mode
 
 
 class AccelerometerMeasure:
