@@ -11,6 +11,7 @@ This file may be distributed under the terms of the GNU GPLv3 license.
 # Standard Library Imports
 from __future__ import annotations
 
+import csv
 import glob
 import multiprocessing
 import os
@@ -18,8 +19,13 @@ import re
 import shutil
 import time
 import traceback
+from enum import IntEnum
 from functools import reduce, wraps
 from typing import TYPE_CHECKING, Callable
+
+# Third-Party Imports
+import numpy as np
+from scipy.optimize import differential_evolution
 
 # Klipper Imports
 
@@ -48,6 +54,9 @@ DATA_FOLDER = os.path.expanduser(
     "~/printer_data/config/adxl_results/chopper_magnitude/tmp"
 )
 
+FCLK = 12  # MHz
+CUTOFF_RANGE = 5
+
 
 def gcmd_grabber(f: Callable) -> Callable:
     """Decorator to grab the gcmd arg temporarily from command methods.
@@ -70,6 +79,61 @@ def gcmd_grabber(f: Callable) -> Callable:
         return result
 
     return wrapped_f
+
+
+class MeasurementMode(IntEnum):
+    """Integer enumerator to specify the current measurement mode."""
+
+    Resonances = 0
+    Vibrations = 1
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation of this MeasurementMode.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+    @classmethod
+    def to_mode(cls, mode: int | str | MeasurementMode) -> MeasurementMode:
+        """Convert the given mode value to a MeasurementMode enum.
+
+        Args:
+            mode (int | str | MeasurementMode]): The value to convert to a
+                MeasurementMode.
+
+        Raises:
+            TypeError: Input value type is invalid.
+            ValueError: Input value is invalid.
+
+        Returns:
+            MeasurementMode: The enum.
+        """
+        if not isinstance(mode, (int, str, MeasurementMode)):
+            raise TypeError(
+                "mode should be a MeasurementMode enum value or one of "
+                f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                f"not {mode.__class__.__name__}: '{mode}'"
+            )
+        if isinstance(mode, str):
+            mode_name_lut = {m.name.lower(): m.name for m in cls}
+            mode_name_lut.update(
+                {m.value: m.name for m in cls}
+            )
+            mode_lower_case = mode.lower()
+            if mode_lower_case not in mode_name_lut:
+                raise ValueError(
+                    "mode should be a MeasurementMode enum value or one of "
+                    f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                    f"not '{mode}'"
+                )
+
+            return cls.__members__[mode_name_lut[mode_lower_case]]
+
+        return mode
 
 
 class AccelerometerMeasure:
@@ -151,7 +215,9 @@ class AccelerometerMeasure:
             max_wait_time = 10  # seconds
             prev_size = -1
             curr_size = (
-                0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
+                0
+                if not os.path.exists(self.full_path)
+                else os.path.getsize(self.full_path)
             )
             while not os.path.exists(self.full_path) or prev_size != curr_size:
                 time.sleep(0.1)
@@ -434,6 +500,80 @@ class CoordGenerator:
         return self.current_coord
 
 
+def calc_static_magnitude(data_path: str) -> np.ndarray:
+    """Calculate static acceleration data from CSV file.
+
+    Args:
+        data_path (str): The path to the CSV file containing static
+            acceleration data.
+
+    Returns:
+        np.ndarray: Mean static acceleration values for x, y, z axes.
+    """
+    start_time = time.time()
+    max_wait_time = 10  # seconds
+    prev_size = -1
+    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    while not os.path.exists(data_path) or prev_size != curr_size:
+        time.sleep(0.1)  # sleep while the file is getting written
+        if os.path.exists(data_path):
+            prev_size = curr_size
+            curr_size = os.path.getsize(data_path)
+        if (time.time() - start_time) > max_wait_time:
+            break
+
+    with open(data_path) as file:
+        data = np.array(
+            [
+                [float(row["accel_x"]), float(row["accel_y"]), float(row["accel_z"])]
+                for row in csv.DictReader(file)
+            ]
+        )
+    return np.mean(data, axis=0)
+
+
+def calc_magnitude(data_path: str, static_data: np.ndarray) -> float:
+    """Calculate median magnitude of acceleration data from CSV file.
+
+    Args:
+        data_path (str): The path to the CSV file containing acceleration data.
+        static_data (np.ndarray): Mean static acceleration values for x, y, z
+            axes.
+
+    Returns:
+        float: Median magnitude of acceleration data.
+    """
+    start_time = time.time()
+    max_wait_time = 10  # seconds
+    prev_size = -1
+    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    while not os.path.exists(data_path) or prev_size != curr_size:
+        time.sleep(0.1)  # sleep while the file is getting written
+        if os.path.exists(data_path):
+            prev_size = curr_size
+            curr_size = os.path.getsize(data_path)
+        if (time.time() - start_time) > max_wait_time:
+            break
+
+    with open(data_path) as file:
+        data = (
+            np.array(
+                [
+                    [
+                        float(row["accel_x"]),
+                        float(row["accel_y"]),
+                        float(row["accel_z"]),
+                    ]
+                    for row in csv.DictReader(file)
+                ]
+            )
+            - static_data
+        )
+    trim_size = len(data) // CUTOFF_RANGE
+    data = data[trim_size:-trim_size]
+    return np.median(np.linalg.norm(data, axis=1))
+
+
 class ChopperTune:
     """The main class to handle the chopper tune functionality.
 
@@ -480,6 +620,32 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
+
+        # Calculated values
+        self.search_method = None
+        self.measurement_mode = MeasurementMode.Vibrations
+        self.max_speed = None
+        self.travel_distance = None
+        self.coord_generator = None
+        self.accel_chip = None
+        self.steppers = None
+        self.current = None
+        self.static_noise_magnitude = None
+
+        # Bounds
+        self.bounds = []
+        self.current_min = None
+        self.current_max = None
+        self.tbl_min = None
+        self.tbl_max = None
+        self.toff_min = None
+        self.toff_max = None
+        self.hstrt_min = None
+        self.hstrt_max = None
+        self.hend_min = None
+        self.hend_max = None
+        self.tpfd_min = None
+        self.tpfd_max = None
 
         self.register_commands()
 
@@ -624,9 +790,7 @@ class ChopperTune:
 
         return axes, steppers
 
-    def get_axis_limits(
-        self, axes: list[str]
-    ) -> tuple[float, float, float, float]:
+    def get_axis_limits(self, axes: list[str]) -> tuple[float, float, float, float]:
         """Select main and secondary axis / stepper.
 
         Args:
@@ -754,7 +918,7 @@ class ChopperTune:
                     self.gcode.run_script_from_command(
                         f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                     )
-                else:
+                elif not (field == "tpfd" and value == -1):
                     self.gcode.run_script_from_command(
                         "SET_TMC_FIELD "
                         f"STEPPER={stepper}{stepper_index} "
@@ -797,7 +961,7 @@ class ChopperTune:
 
     def get_current_range(
         self,
-        find_resonances: bool,
+        measurement_mode: MeasurementMode,
         current_min: int | str,
         current_max: int | str,
         steppers: list[str],
@@ -805,7 +969,7 @@ class ChopperTune:
         """Get run current.
 
         Args:
-            find_resonances (bool): Sets the mode to resonance measurement.
+            measurement_mode (MeasurementMode): The measurement mode.
             current_min (int | str): The minimum current value.
             current_max (int | str): The maximum current value.
             steppers (list[str]): The main and secondary stepper.
@@ -835,7 +999,7 @@ class ChopperTune:
         else:
             current_max = int(current_max)
 
-        if find_resonances:
+        if measurement_mode == MeasurementMode.Resonances:
             current_max = current_min
 
         return current_min, current_max
@@ -874,7 +1038,6 @@ class ChopperTune:
         min_speed: float,
         max_speed: float,
         speed_change_step: float,
-        find_resonances: bool,
         measure_time: float,
         axes: list[str],
         steppers: list[str],
@@ -893,8 +1056,6 @@ class ChopperTune:
                 value.
             speed_change_step (float | str): The step in each iteration the
                 speed will be increased to.
-            find_resonances (bool): Sets the mode to resonance measurement
-                mode.
             measure_time (float): The measurement time in seconds.
             axes (list[str]): The main and secondary axis.
             steppers (list[str]): The main and secondary stepper.
@@ -909,7 +1070,7 @@ class ChopperTune:
         # In vibration measurement mode,
         # search and take registers from printer.cfg,
         # to set the speed range
-        if find_resonances:
+        if self.measurement_mode == MeasurementMode.Resonances:
             rotation_dist = self.stepper_settings[steppers[0]].get("rotation_distance")
             # get gear ratio
             gear_ratio = self.stepper_settings[steppers[0]].get("gear_ratio")
@@ -1074,9 +1235,9 @@ class ChopperTune:
         max_speed: float,
         speed_change_step: float,
         iterations: int,
+        search_method: str,
         a_axis_min: float,
         travel_distance: float,
-        find_resonances: bool,
     ) -> None:
         """Display process information.
 
@@ -1097,19 +1258,19 @@ class ChopperTune:
             max_speed (float): The maximum speed value.
             speed_change_step (float): The speed change step value.
             iterations (int): The number of iterations.
+            search_method (str): The search method.
             a_axis_min (float): The minimum position of the main axis.
             travel_distance (float): The travel distance value.
-            find_resonances (bool): Sets the mode to resonance measurement.
         """
-        if find_resonances:
-            # This needs to be updated for CoreXY
+        if self.measurement_mode == MeasurementMode.Resonances:
+            # Resonance measurement mode uses the minimum values for registers.
             self.respond_info(
                 f"Final max travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
                 f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                "Start find resonances mode, "
+                f"Start find resonances mode ({search_method}), "
                 f"speed: {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
                 f"{speed_change_step:.2f} step "
                 f"current={current_min} mA "
@@ -1125,7 +1286,7 @@ class ChopperTune:
                 f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                "Start of register enumeration mode, "
+                f"Start of register enumeration mode ({search_method}), "
                 f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
                 f"current: {current_min} --> {current_max} mA "
                 f"iterations: {iterations} "
@@ -1174,7 +1335,8 @@ class ChopperTune:
 
     def measure_vibrations(
         self,
-        next_coord: Coord,
+        coord_generator: CoordGenerator,
+        travel_distance: float,
         speed: float,
         accel_chip: str,
         name: str,
@@ -1182,7 +1344,8 @@ class ChopperTune:
         """Perform vibration measurement.
 
         Args:
-            next_coord (Coord): The next coordinate to move to.
+            coord_generator (CoordGenerator): The coordinate generator.
+            travel_distance (float): The travel distance.
             speed (float): The speed for the measurement.
             accel_chip (str): Accelerometer chip name, i.e adxl345.
             name (str): The name of the measurement.
@@ -1197,14 +1360,16 @@ class ChopperTune:
             accel_chip=accel_chip,
             name=name,
         ) as accelerometer_measurement:
-            self.gcode.run_script_from_command(
-                "G0 "
-                f"X{next_coord.x:0.2f} "
-                f"Y{next_coord.y:0.2f} "
-                f"Z{next_coord.z:0.2f} "
-                f"F{speed * 60}"
-            )
-
+            # go in both directions at once
+            for _ in range(2):
+                next_coord = coord_generator.next(travel_distance)
+                self.gcode.run_script_from_command(
+                    "G0 "
+                    f"X{next_coord.x:0.2f} "
+                    f"Y{next_coord.y:0.2f} "
+                    f"Z{next_coord.z:0.2f} "
+                    f"F{speed * 60}"
+                )
         self.toolhead.wait_moves()
 
         # move the measurement file to the DATA_FOLDER
@@ -1271,10 +1436,9 @@ class ChopperTune:
         min_speed: int | str = "default",
         max_speed: int | str = "default",
         speed_change_step: int | str = "default",
-        iterations: int = 1,
+        search_method: str = "default",
         travel_distance: int | str = "default",
         accel_chip: str = "default",
-        find_resonances: bool = False,
         run_plotter: bool = True,
     ) -> bool:
         """Measure vibrations and tune stepper motors for low noise.
@@ -1304,19 +1468,29 @@ class ChopperTune:
                 value.
             speed_change_step (int | str): The step in each iteration the speed
                 will be increased to.
-            iterations (int): Number of iterations, defaults to 1.
+            search_method (str): The search method, can be one of
+                ["bruteforce", "adaptive"], or can be set to "default" to
+                use "bruteforce".
             travel_distance (int | str): The travel distance, or can be set to
                 "default" to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
             accel_chip (str): The name of the acceleration chip.
-            find_resonances (bool): Sets the mode to resonance measurement
-                mode.
             run_plotter (bool): If set to True, the magnitude graphs will be
                 generated after the vibration measurements are completed.
 
         Returns:
             bool: True if the command runs without any errors, False otherwise.
         """
+        self.search_method = (
+            "bruteforce" if search_method == "default" else search_method
+        )
+        if self.search_method not in ["bruteforce", "adaptive"]:
+            raise self.printer.command_error(
+                f"WARNING!!! Unsupported search method: {self.search_method}"
+            )
+
+        self.respond_info(f"Selected {self.search_method} as search method")
+
         measure_time = self.measure_time / 1000
         self.reset_registers()
         # Find the steppers count of the main axis
@@ -1332,10 +1506,10 @@ class ChopperTune:
         accel_chip = self.get_accelerometer_chip(accel_chip)
 
         current_min, current_max = self.get_current_range(
-            find_resonances, current_min, current_max, steppers
+            self.measurement_mode, current_min, current_max, steppers
         )
 
-        if find_resonances:
+        if self.measurement_mode == MeasurementMode.Resonances:
             # In vibration measurement mode,
             # search and take registers from printer.cfg
             (
@@ -1353,7 +1527,6 @@ class ChopperTune:
             min_speed,
             max_speed,
             speed_change_step,
-            find_resonances,
             measure_time,
             axes,
             steppers,
@@ -1389,10 +1562,10 @@ class ChopperTune:
             min_speed,
             max_speed,
             speed_change_step,
-            iterations,
+            self.iterations,
+            self.search_method,
             a_axis_min,
             travel_distance,
-            find_resonances,
         )
 
         # Home regardless of previous homing state
@@ -1409,8 +1582,8 @@ class ChopperTune:
 
         # if this is not running in "find resonances" mode,
         # move away from the middle exactly half or a travel distance
-        if not find_resonances:
-            initial_position -= initial_direction * (travel_distance / 2)
+        # if measurement_mode == MeasurementMode.Vibrations:
+        initial_position -= initial_direction * (travel_distance / 2)
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1432,78 +1605,104 @@ class ChopperTune:
         self.toolhead.wait_moves()
 
         # Measure accelerometer noise
-        self.measure_accelerometer_noise(accel_chip)
+        static_data_path = self.measure_accelerometer_noise(accel_chip)
+        static_noise_magnitude = calc_static_magnitude(static_data_path)
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
             direction=initial_direction, start_coord=initial_position
         )
-        for current in range(current_min, current_max + 1, self.current_change_step):
-            self.apply_registers(steppers=steppers, field="curr", value=current)
-            # Set tbl values
-            for tbl in range(tbl_min, tbl_max + 1):
-                self.apply_registers(steppers=steppers, field="tbl", value=tbl)
-                # Set toff values
-                for toff in range(toff_min, toff_max + 1):
-                    self.apply_registers(steppers=steppers, field="toff", value=toff)
-                    for hstrt_value in range(hstrt_min, hstrt_max + 1):
-                        for hend_value in range(hend_min, hend_max + 1):
-                            if (hend_value + hstrt_value) > hstrt_hend_max:
-                                continue
-                            # Set hend, and hstrt values
-                            self.apply_registers(
-                                steppers=steppers, field="hend", value=hend_value
-                            )
-                            self.apply_registers(
-                                steppers=steppers, field="hstrt", value=hstrt_value
-                            )
-                            # Set tpfd values
-                            for tpfd in range(tpfd_min, tpfd_max + 1):
-                                if tpfd_min != -1 and tpfd_max != -1:
-                                    self.apply_registers(
-                                        steppers=steppers, field="tpfd", value=tpfd
-                                    )
-                                # Dump TMC settings
-                                self.gcode.run_script_from_command(
-                                    f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
-                                )
-                                freq = self.calculate_frequency(tbl, toff)
-                                for speed in range(
-                                    int(min_speed * 100),
-                                    int(max_speed * 100) + 1,
-                                    int(speed_change_step * 100),
-                                ):
-                                    speed = speed / 100
-                                    for i in range(iterations):
-                                        name = (
-                                            f"__{current}_{tbl}_{toff}_{hstrt_value}_"
-                                            f"{hend_value}_{tpfd}_{speed * 100:.0f}_"
-                                            f"{freq:.0f}_{i + 1}__"
-                                        )
 
-                                        real_travel_distance = travel_distance
-                                        if find_resonances:
-                                            # when finding resonances,
-                                            # keep the travel duration constant
-                                            real_travel_distance = travel_distance * (
-                                                speed / max_speed
+        # calculated vars
+        self.speed = min_speed
+        self.max_speed = max_speed
+        self.travel_distance = travel_distance
+        self.coord_generator = coord_generator
+        self.accel_chip = accel_chip
+        self.steppers = steppers
+        self.current = current_min
+        self.static_noise_magnitude = static_noise_magnitude
+
+        # bounds
+        self.current_min = current_min
+        self.current_max = current_max
+
+        self.tbl_min = tbl_min
+        self.tbl_max = tbl_max
+        self.toff_min = toff_min
+        self.toff_max = toff_max
+        self.hstrt_min = hstrt_min
+        self.hstrt_max = hstrt_max
+        self.hend_min = hend_min
+        self.hend_max = hend_max
+        self.tpfd_min = tpfd_min
+        self.tpfd_max = tpfd_max
+
+        self.bounds = [
+            (self.current_min, self.current_max),
+            (self.tbl_min, self.tbl_max),
+            (self.toff_min, self.toff_max),
+            (self.hstrt_min, self.hstrt_max),
+            (self.hend_min, self.hend_max),
+            (self.tpfd_min, self.tpfd_max),
+        ]
+
+        # Force bruteforce in vibration measurement mode
+        if self.measurement_mode == MeasurementMode.Resonances:
+            self.search_method = "bruteforce"
+
+        if self.search_method == "adaptive":
+            # Run adaptive optimization
+            _best_parameters = self.run_optimization()
+        else:
+            # Brute-force search
+            speed_vs_vibrations = []
+            for current in range(
+                current_min, current_max + 1, self.current_change_step
+            ):
+                for tbl in range(tbl_min, tbl_max + 1):
+                    for toff in range(toff_min, toff_max + 1):
+                        for hstrt in range(hstrt_min, hstrt_max + 1):
+                            for hend in range(hend_min, hend_max + 1):
+                                if (hend + hstrt) > hstrt_hend_max:
+                                    continue
+                                for tpfd in range(tpfd_min, tpfd_max + 1):
+                                    for speed in range(
+                                        int(min_speed * 100),
+                                        int(max_speed * 100) + 1,
+                                        int(speed_change_step * 100),
+                                    ):
+                                        speed = speed / 100
+                                        for iteration in range(self.iterations):
+                                            measured_vibrations = (
+                                                self.execute_vibration_measurement(
+                                                    speed,
+                                                    max_speed,
+                                                    travel_distance,
+                                                    coord_generator,
+                                                    accel_chip,
+                                                    steppers,
+                                                    static_noise_magnitude,
+                                                    iteration,
+                                                    current,
+                                                    tbl,
+                                                    toff,
+                                                    hstrt,
+                                                    hend,
+                                                    tpfd,
+                                                )
                                             )
-                                            self.respond_info(
-                                                f"Speed {speed:0.2f} mm/s on "
-                                                f"{real_travel_distance:0.2f} mm"
+                                            speed_vs_vibrations.append(
+                                                (speed, measured_vibrations)
                                             )
-                                            self.toolhead.wait_moves()
-
-                                        next_coord = coord_generator.next(
-                                            real_travel_distance
-                                        )
-
-                                        self.measure_vibrations(
-                                            next_coord,
-                                            speed,
-                                            accel_chip,
-                                            name,
-                                        )
+            if self.measurement_mode == MeasurementMode.Resonances:
+                max_vibrations_and_speed = sorted(
+                    speed_vs_vibrations, key=lambda x: x[1]
+                )[-1]
+                self.respond_info(
+                    "Max vibrations seems to be at "
+                    f"{max_vibrations_and_speed[0]:0.2f} mm/s"
+                )
 
         self.gcode.run_script_from_command("G4 P500")
         self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{travel_speed}")
@@ -1514,7 +1713,7 @@ class ChopperTune:
             # export data to processing
             self.gcode.run_script_from_command(
                 "RUN_SHELL_COMMAND CMD=chop_tune "
-                f"PARAMS='iterations={iterations} "
+                f"PARAMS='iterations={self.iterations} "
                 f"driver={driver} "
                 f"sense_resistor={sense_resistor}'"
             )
@@ -1522,12 +1721,168 @@ class ChopperTune:
         self.respond_info(
             "To run parser manually; type - "
             "RUN_SHELL_COMMAND CMD=chop_tune "
-            f"PARAMS='iterations={iterations} "
+            f"PARAMS='iterations={self.iterations} "
             f"driver={driver} "
             f"sense_resistor={sense_resistor}"
         )
 
         return True
+
+    def execute_vibration_measurement(
+        self,
+        speed: float,
+        max_speed: float,
+        travel_distance: float,
+        coord_generator: CoordGenerator,
+        accel_chip: str,
+        steppers: list[str],
+        static_noise_magnitude: float,
+        iteration: int,
+        current: int,
+        tbl: int,
+        toff: int,
+        hstrt: int,
+        hend: int,
+        tpfd: int,
+    ) -> float:
+        """Execute a single vibration measurement.
+
+        Args:
+            speed (float): The speed for the measurement.
+            max_speed (float): The maximum speed for the measurement.
+            travel_distance (float): The travel distance.
+            coord_generator (CoordGenerator): The coordinate generator.
+            accel_chip (str): Accelerometer chip name, i.e adxl345.
+            steppers (list[str]): The main and secondary stepper.
+            static_noise_magnitude (float): The static noise magnitude.
+            iteration (int): The current iteration number.
+            current (int): The current value.
+            tbl (int): The TBL value.
+            toff (int): The TOFF value.
+            hstrt (int): The HSTRT value.
+            hend (int): The HEND value.
+            tpfd (int): The TPFD value.
+
+        Returns:
+            float: The measured vibrations.
+        """
+        # Set tbl values
+        # Set toff values
+        # Set hend, and hstrt values
+        self.apply_registers(steppers=steppers, field="curr", value=current)
+        self.apply_registers(steppers=steppers, field="tbl", value=tbl)
+        self.apply_registers(steppers=steppers, field="toff", value=toff)
+        self.apply_registers(steppers=steppers, field="hend", value=hend)
+        self.apply_registers(steppers=steppers, field="hstrt", value=hstrt)
+        self.apply_registers(steppers=steppers, field="tpfd", value=tpfd)
+
+        # Dump TMC settings
+        self.gcode.run_script_from_command(
+            f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
+        )
+        freq = self.calculate_frequency(tbl, toff)
+        name = (
+            f"__{current}_{tbl}_{toff}_{hstrt}_"
+            f"{hend}_{tpfd}_{speed * 100:.0f}_"
+            f"{freq:.0f}_{iteration + 1}__"
+        )
+
+        real_travel_distance = travel_distance
+        if self.measurement_mode == MeasurementMode.Resonances:
+            # when finding resonances,
+            # keep the travel duration constant
+            real_travel_distance = travel_distance * (speed / max_speed)
+            self.respond_info(
+                f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
+            )
+        self.toolhead.wait_moves()
+
+        measurement_data_path = self.measure_vibrations(
+            coord_generator,
+            real_travel_distance,
+            speed,
+            accel_chip,
+            name,
+        )
+
+        # measured_vibrations should be used to optimize the inputs with scipy.optimize
+        measured_vibrations = calc_magnitude(
+            data_path=measurement_data_path, static_data=static_noise_magnitude
+        )
+
+        self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
+        return measured_vibrations
+
+    def objective_function(self, params: list[float]) -> float:
+        """Objective function for optimization.
+
+        Args:
+            params (list[float]): The parameters to optimize.
+
+        Returns:
+            float: The average measured vibrations.
+        """
+        current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
+        total_vibrations = 0
+        for iteration in range(self.iterations):
+            measured_vibrations = self.execute_vibration_measurement(
+                self.speed,
+                self.max_speed,
+                self.travel_distance,
+                self.coord_generator,
+                self.accel_chip,
+                self.steppers,
+                self.static_noise_magnitude,
+                iteration,
+                current,
+                tbl,
+                toff,
+                hstrt,
+                hend,
+                tpfd,
+            )
+            total_vibrations += measured_vibrations
+        total_vibrations /= self.iterations
+        return total_vibrations
+
+    def run_optimization(self) -> list[int]:
+        """Run the optimization process.
+
+        Returns:
+            list[int]: The best parameters found.
+        """
+        self.respond_info("Starting optimization...")
+        start_time = time.time()
+
+        # 'strategy' and 'popsize' are tuned to reduce total measurements
+        # 'tol' can be higher since our parameters are discrete
+        result = differential_evolution(
+            self.objective_function,
+            self.bounds,
+            init="sobol",
+            strategy="best1bin",
+            maxiter=10,
+            popsize=5,  # Total evaluations = maxiter * popsize * N_params
+            tol=0.1,
+            mutation=(0.5, 1),
+            recombination=0.7,
+            polish=False,  # Polish uses local minimize, which we avoid for discrete
+        )
+
+        best_params = [round(p) for p in result.x]
+        duration = time.time() - start_time
+        self.respond_info(
+            f"Optimization Completed in {duration:.2f} seconds!\n"
+            f"Best Score: {result.fun}\n"
+            "Parameters: "
+            f"current= {best_params[0]}, "
+            f"tbl={best_params[1]}, "
+            f"toff={best_params[2]}, "
+            f"hstrt={best_params[3]}, "
+            f"hend={best_params[4]} "
+            f"tpfd={best_params[5]}"
+        )
+        return best_params
 
     @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
@@ -1555,6 +1910,8 @@ class ChopperTune:
             tpfd_min = int(gcmd.get("TPFD_MIN", -1))
             tpfd_max = int(gcmd.get("TPFD_MAX", -1))
             min_speed = gcmd.get("MIN_SPEED", "default").lower()
+            search_method = gcmd.get("SEARCH_METHOD", "default").lower()
+            # search_method can be default, bruteforce or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)
             max_speed = gcmd.get("MAX_SPEED", "default").lower()
@@ -1563,17 +1920,20 @@ class ChopperTune:
             speed_change_step = gcmd.get("SPEED_CHANGE_STEP", "default").lower()
             if IS_DIGIT.match(speed_change_step):
                 speed_change_step = float(speed_change_step)
-            iterations = int(gcmd.get("ITERATIONS", 1))
+            self.iterations = int(gcmd.get("ITERATIONS", 1))
             travel_distance = gcmd.get("TRAVEL_DISTANCE", "default").lower()
             if IS_DIGIT.match(travel_distance):
                 travel_distance = float(travel_distance)
             accel_chip = gcmd.get("ACCELEROMETER", "default").lower()
-            find_resonances = {
-                "0": False,
-                "1": True,
-                "false": False,
-                "true": True,
-            }.get(gcmd.get("FIND_RESONANCES", "false").lower(), False)
+
+            self.measurement_mode = {
+                "0": MeasurementMode.Vibrations,
+                "1": MeasurementMode.Resonances,
+                "false": MeasurementMode.Vibrations,
+                "true": MeasurementMode.Resonances,
+            }.get(
+                gcmd.get("FIND_RESONANCES", "false").lower(), MeasurementMode.Resonances
+            )
             run_plotter = {
                 "0": False,
                 "1": True,
@@ -1599,10 +1959,9 @@ class ChopperTune:
                 min_speed=min_speed,
                 max_speed=max_speed,
                 speed_change_step=speed_change_step,
-                iterations=iterations,
+                search_method=search_method,
                 travel_distance=travel_distance,
                 accel_chip=accel_chip,
-                find_resonances=find_resonances,
                 run_plotter=run_plotter,
             )
         except Exception:
