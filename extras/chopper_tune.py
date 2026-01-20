@@ -1648,7 +1648,7 @@ class ChopperTune:
         ]
 
         # Force bruteforce in vibration measurement mode
-        if self.measurement_mode == MeasurementMode.Vibrations:
+        if self.measurement_mode == MeasurementMode.Resonances:
             self.search_method = "bruteforce"
 
         if self.search_method == "adaptive":
