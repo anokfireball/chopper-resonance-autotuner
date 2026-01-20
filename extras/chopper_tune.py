@@ -1824,7 +1824,7 @@ class ChopperTune:
         """
         current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
         total_vibrations = 0
-        for iteration in self.iterations:
+        for iteration in range(self.iterations):
             measured_vibrations = self.execute_vibration_measurement(
                 self.speed,
                 self.max_speed,
