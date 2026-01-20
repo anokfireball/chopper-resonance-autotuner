@@ -1452,6 +1452,7 @@ class ChopperTune:
         speed_change_step: int | str = "default",
         search_method: str = "default",
         travel_distance: int | str = "default",
+        direction: int = 1,
         accel_chip: str = "default",
         run_plotter: bool = True,
     ) -> bool:
@@ -1593,6 +1594,8 @@ class ChopperTune:
             "z": Coord((b_axis_mid, home_pos.y, a_axis_mid)),
         }[axes[0]]
         self.initial_direction = self.get_initial_direction(axes)
+        if direction == -1:
+            self.initial_direction = self.initial_direction * -1
 
         # if this is not running in "find resonances" mode,
         # move away from the middle exactly half or a travel distance
@@ -1926,7 +1929,7 @@ class ChopperTune:
             tpfd_min = int(gcmd.get("TPFD_MIN", -1))
             tpfd_max = int(gcmd.get("TPFD_MAX", -1))
             min_speed = gcmd.get("MIN_SPEED", "default").lower()
-            search_method = gcmd.get("SEARCH_METHOD", "default").lower()
+            search_method = gcmd.get("SEARCH_METHOD", "bruteforce").lower()
             # search_method can be default, bruteforce or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)
@@ -1937,6 +1940,7 @@ class ChopperTune:
             if IS_DIGIT.match(speed_change_step):
                 speed_change_step = float(speed_change_step)
             self.iterations = int(gcmd.get("ITERATIONS", 1))
+            direction = int(gcmd.get("DIRECTION", 1))
             travel_distance = gcmd.get("TRAVEL_DISTANCE", "default").lower()
             if IS_DIGIT.match(travel_distance):
                 travel_distance = float(travel_distance)
@@ -1977,6 +1981,7 @@ class ChopperTune:
                 speed_change_step=speed_change_step,
                 search_method=search_method,
                 travel_distance=travel_distance,
+                direction=direction,
                 accel_chip=accel_chip,
                 run_plotter=run_plotter,
             )
