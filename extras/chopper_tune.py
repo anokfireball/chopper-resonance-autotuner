@@ -496,7 +496,6 @@ class CoordGenerator:
             float: The next position.
         """
         self.current_coord += self.direction * travel_distance
-        self.switch_direction()
         return self.current_coord
 
 
@@ -625,12 +624,15 @@ class ChopperTune:
         self.search_method = None
         self.measurement_mode = MeasurementMode.Vibrations
         self.max_speed = None
+        self.travel_speed = None
         self.travel_distance = None
         self.coord_generator = None
         self.accel_chip = None
         self.steppers = None
         self.current = None
         self.static_noise_magnitude = None
+        self.initial_position = None
+        self.initial_direction = None
 
         # Bounds
         self.bounds = []
@@ -915,15 +917,17 @@ class ChopperTune:
                     )
 
                 if field.lower() == "curr":
-                    self.gcode.run_script_from_command(
-                        f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                    )
+                    if self.registers[field.lower()] != value:
+                        self.gcode.run_script_from_command(
+                            f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
+                        )
                 elif not (field == "tpfd" and value == -1):
-                    self.gcode.run_script_from_command(
-                        "SET_TMC_FIELD "
-                        f"STEPPER={stepper}{stepper_index} "
-                        f"FIELD={field} VALUE={value}"
-                    )
+                    if self.registers[field.lower()] != value:
+                        self.gcode.run_script_from_command(
+                            "SET_TMC_FIELD "
+                            f"STEPPER={stepper}{stepper_index} "
+                            f"FIELD={field} VALUE={value}"
+                        )
         # store the last applied value
         self.registers[field.lower()] = value
 
@@ -1361,20 +1365,30 @@ class ChopperTune:
             name=name,
         ) as accelerometer_measurement:
             # go in both directions at once
-            for _ in range(2):
-                next_coord = coord_generator.next(travel_distance)
-                self.gcode.run_script_from_command(
-                    "G0 "
-                    f"X{next_coord.x:0.2f} "
-                    f"Y{next_coord.y:0.2f} "
-                    f"Z{next_coord.z:0.2f} "
-                    f"F{speed * 60}"
-                )
+            next_coord = coord_generator.next(travel_distance)
+            self.gcode.run_script_from_command(
+                "G0 "
+                f"X{next_coord.x:0.2f} "
+                f"Y{next_coord.y:0.2f} "
+                f"Z{next_coord.z:0.2f} "
+                f"F{speed * 60}"
+            )
+        # Move to the initial position
+        self.gcode.run_script_from_command(
+            "G0 "
+            f"X{self.initial_position.x:0.2f} "
+            f"Y{self.initial_position.y:0.2f} "
+            f"Z{self.initial_position.z:0.2f} "
+            f"F{self.travel_speed}"
+        )
+        coord_generator.current_coord.x = self.initial_position.x
+        coord_generator.current_coord.y = self.initial_position.y
+        coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
 
         # move the measurement file to the DATA_FOLDER
         measurement_data_path = accelerometer_measurement.move()
-        self.respond_info(f"Accel. data: {measurement_data_path}")
+        # self.respond_info(f"Accel. data: {measurement_data_path}")
 
         return measurement_data_path
 
@@ -1502,7 +1516,7 @@ class ChopperTune:
         axes, steppers = self.get_axes_and_steppers(axis)
 
         a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.get_axis_limits(axes)
-        acceleration, travel_speed = self.get_travel_speed_and_acceleration(axes)
+        acceleration, self.travel_speed = self.get_travel_speed_and_acceleration(axes)
         accel_chip = self.get_accelerometer_chip(accel_chip)
 
         current_min, current_max = self.get_current_range(
@@ -1573,17 +1587,17 @@ class ChopperTune:
         home_pos = Coord(self.toolhead.get_position())
 
         # Get initial position and direction
-        initial_position = {
+        self.initial_position = {
             "x": Coord((a_axis_mid, b_axis_mid, home_pos.z)),
             "y": Coord((b_axis_mid, a_axis_mid, home_pos.z)),
             "z": Coord((b_axis_mid, home_pos.y, a_axis_mid)),
         }[axes[0]]
-        initial_direction = self.get_initial_direction(axes)
+        self.initial_direction = self.get_initial_direction(axes)
 
         # if this is not running in "find resonances" mode,
         # move away from the middle exactly half or a travel distance
         # if measurement_mode == MeasurementMode.Vibrations:
-        initial_position -= initial_direction * (travel_distance / 2)
+        self.initial_position -= self.initial_direction * (travel_distance / 2)
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1592,10 +1606,10 @@ class ChopperTune:
         # Move to the initial position
         self.gcode.run_script_from_command(
             "G0 "
-            f"X{initial_position.x:0.2f} "
-            f"Y{initial_position.y:0.2f} "
-            f"Z{initial_position.z:0.2f} "
-            f"F{travel_speed}"
+            f"X{self.initial_position.x:0.2f} "
+            f"Y{self.initial_position.y:0.2f} "
+            f"Z{self.initial_position.z:0.2f} "
+            f"F{self.travel_speed}"
         )
 
         # Clean csv files while going to the initial position
@@ -1610,7 +1624,8 @@ class ChopperTune:
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
-            direction=initial_direction, start_coord=initial_position
+            direction=self.initial_direction,
+            start_coord=self.initial_position
         )
 
         # calculated vars
@@ -1705,7 +1720,7 @@ class ChopperTune:
                 )
 
         self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{travel_speed}")
+        self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{self.travel_speed}")
         self.toolhead.wait_moves()
         if run_plotter:
             self.respond_info("Magnitude graphs generation...")
@@ -1843,6 +1858,7 @@ class ChopperTune:
             )
             total_vibrations += measured_vibrations
         total_vibrations /= self.iterations
+        self.respond_info(f"Mean vibrations: {total_vibrations:0.2f}")
         return total_vibrations
 
     def run_optimization(self) -> list[int]:
@@ -1873,7 +1889,7 @@ class ChopperTune:
         duration = time.time() - start_time
         self.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
-            f"Best Score: {result.fun}\n"
+            f"Best Score: {result.fun:.2f}\n"
             "Parameters: "
             f"current= {best_params[0]}, "
             f"tbl={best_params[1]}, "
