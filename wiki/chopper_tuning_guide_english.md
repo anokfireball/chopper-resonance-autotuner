@@ -16,7 +16,7 @@ main page of the Fluidd / Mainsail.
 
 And if for some reason not, then install [manually](/wiki/manual_install_en.md).
 
-2. Сonnect the accelerometer to the motor by screwing it in, this guarantees
+2. Connect the accelerometer to the motor by screwing it in, this guarantees
    accurate vibration measurement.
 
    However, it is possible to connect, as for example when measuring resonances,
