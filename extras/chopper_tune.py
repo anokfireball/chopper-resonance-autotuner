@@ -2092,6 +2092,10 @@ class ChopperTune:
         )
         if self.driver in ["2240", "5160"]:
             self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+
+        # clear the cache for the next runs
+        self.execute_vibration_measurement.cache_clear()
+
         return best_params
 
     @gcmd_grabber
