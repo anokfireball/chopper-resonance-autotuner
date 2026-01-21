@@ -723,6 +723,7 @@ class ChopperTune:
         self.toff_max = None
         self.hstrt_min = None
         self.hstrt_max = None
+        self.hstrt_hend_max = None
         self.hend_min = None
         self.hend_max = None
         self.tpfd_min = None
@@ -1746,6 +1747,7 @@ class ChopperTune:
         self.toff_max = toff_max
         self.hstrt_min = hstrt_min
         self.hstrt_max = hstrt_max
+        self.hstrt_hend_max = hstrt_hend_max
         self.hend_min = hend_min
         self.hend_max = hend_max
         self.tpfd_min = tpfd_min
@@ -1938,6 +1940,14 @@ class ChopperTune:
             float: The average measured vibrations.
         """
         current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
+
+        # penalize hstart + hend > hstrt_hend_max
+        if hstrt + hend > self.hstrt_hend_max:
+            self.respond_info(
+                f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
+            )
+            return float('inf')
+
         total_vibrations = 0
         for iteration in range(self.iterations):
             measured_vibrations = self.execute_vibration_measurement(
