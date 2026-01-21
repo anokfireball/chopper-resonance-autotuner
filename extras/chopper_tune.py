@@ -723,6 +723,7 @@ class ChopperTune:
         self.toff_max = None
         self.hstrt_min = None
         self.hstrt_max = None
+        self.hstrt_hend_max = None
         self.hend_min = None
         self.hend_max = None
         self.tpfd_min = None
@@ -852,9 +853,10 @@ class ChopperTune:
             if axis in ("x", "y"):
                 if axis == "x":
                     axes = ("x", "y")
+                    steppers = ("stepper_x", "stepper_y")
                 elif axis == "y":
                     axes = ("y", "x")
-                steppers = ("stepper_x", "stepper_y")
+                    steppers = ("stepper_y", "stepper_x")
             elif axis == "z":
                 axes = ("z", "x")
                 steppers = ("stepper_z",)
@@ -981,34 +983,34 @@ class ChopperTune:
         if field is None or value is None:
             return
 
-        for stepper in steppers:
-            for stepper_index in range(self.registers["stepper_count"]):
-                # stepper_x,
-                # stepper_y,
-                # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
-                # don't add index for the first stepper
-                stepper_index = str(stepper_index) if stepper_index > 0 else ""
-                if self.debug:
-                    self.respond_info(
-                        f"Setting {field.lower()} "
-                        f"from {self.registers[field]} to {value} "
-                        f"on {stepper}{stepper_index}"
-                    )
+        stepper = steppers[0]  # just update the main stepper
+        for stepper_index in range(self.registers["stepper_count"]):
+            # stepper_x,
+            # stepper_y,
+            # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
+            # don't add index for the first stepper
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            if self.debug:
+                self.respond_info(
+                    f"Setting {field.lower()} "
+                    f"from {self.registers[field]} to {value} "
+                    f"on {stepper}{stepper_index}"
+                )
 
-                if field.lower() == "curr":
-                    if self.registers[field.lower()] != value:
-                        self.gcode.run_script_from_command(
-                            f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                        )
-                elif (
-                    not (field == "tpfd" and value == -1)
-                    and self.registers[field.lower()] != value
-                ):
+            if field.lower() == "curr":
+                if self.registers[field.lower()] != value:
                     self.gcode.run_script_from_command(
-                        "SET_TMC_FIELD "
-                        f"STEPPER={stepper}{stepper_index} "
-                        f"FIELD={field} VALUE={value}"
+                        f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                     )
+            elif (
+                not (field == "tpfd" and value == -1)
+                and self.registers[field.lower()] != value
+            ):
+                self.gcode.run_script_from_command(
+                    "SET_TMC_FIELD "
+                    f"STEPPER={stepper}{stepper_index} "
+                    f"FIELD={field} VALUE={value}"
+                )
         # store the last applied value
         self.registers[field.lower()] = value
 
@@ -1746,6 +1748,7 @@ class ChopperTune:
         self.toff_max = toff_max
         self.hstrt_min = hstrt_min
         self.hstrt_max = hstrt_max
+        self.hstrt_hend_max = hstrt_hend_max
         self.hend_min = hend_min
         self.hend_max = hend_max
         self.tpfd_min = tpfd_min
@@ -1837,7 +1840,12 @@ class ChopperTune:
                 f"driver={self.driver} "
                 f"sense_resistor={self.sense_resistor}"
             )
+        else:
+            # Save best parameters
+            self.save_configs(best_parameters)
 
+        # reset number of samples
+        self.number_of_samples = 0
         return best_parameters
 
     @cache
@@ -1938,6 +1946,14 @@ class ChopperTune:
             float: The average measured vibrations.
         """
         current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
+
+        # penalize hstart + hend > hstrt_hend_max
+        if hstrt + hend > self.hstrt_hend_max:
+            self.respond_info(
+                f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
+            )
+            return float('inf')
+
         total_vibrations = 0
         for iteration in range(self.iterations):
             measured_vibrations = self.execute_vibration_measurement(
@@ -2098,6 +2114,32 @@ class ChopperTune:
         self.execute_vibration_measurement.cache_clear()
 
         return overall_best_params
+
+    def save_configs(self, best_parameters: dict | None) -> None:
+        """Save the best parameters to printer.cfg.
+
+        Args:
+            best_parameters (dict | None): The best parameters found.
+        """
+        if best_parameters is None:
+            return
+
+        for field, value in best_parameters.items():
+            if field == "tpfd" and self.driver not in ["2240", "5160"]:
+                continue  # skip tpfd for unsupported drivers
+
+            field_name = f"driver_{field}" if field != "current" else "run_current"
+            value = str(value) if field != "current" else f"{value / 1000:0.2f}"
+
+            self.configfile.set(
+                f"tmc{self.driver} {self.steppers[0]}",
+                field_name,
+                value,
+            )
+
+        self.respond_info(
+            "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
+        )
 
     @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
