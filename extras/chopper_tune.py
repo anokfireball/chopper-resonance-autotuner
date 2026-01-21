@@ -983,34 +983,34 @@ class ChopperTune:
         if field is None or value is None:
             return
 
-        for stepper in steppers:
-            for stepper_index in range(self.registers["stepper_count"]):
-                # stepper_x,
-                # stepper_y,
-                # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
-                # don't add index for the first stepper
-                stepper_index = str(stepper_index) if stepper_index > 0 else ""
-                if self.debug:
-                    self.respond_info(
-                        f"Setting {field.lower()} "
-                        f"from {self.registers[field]} to {value} "
-                        f"on {stepper}{stepper_index}"
-                    )
+        stepper = steppers[0]  # just update the main stepper
+        for stepper_index in range(self.registers["stepper_count"]):
+            # stepper_x,
+            # stepper_y,
+            # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
+            # don't add index for the first stepper
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            if self.debug:
+                self.respond_info(
+                    f"Setting {field.lower()} "
+                    f"from {self.registers[field]} to {value} "
+                    f"on {stepper}{stepper_index}"
+                )
 
-                if field.lower() == "curr":
-                    if self.registers[field.lower()] != value:
-                        self.gcode.run_script_from_command(
-                            f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                        )
-                elif (
-                    not (field == "tpfd" and value == -1)
-                    and self.registers[field.lower()] != value
-                ):
+            if field.lower() == "curr":
+                if self.registers[field.lower()] != value:
                     self.gcode.run_script_from_command(
-                        "SET_TMC_FIELD "
-                        f"STEPPER={stepper}{stepper_index} "
-                        f"FIELD={field} VALUE={value}"
+                        f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                     )
+            elif (
+                not (field == "tpfd" and value == -1)
+                and self.registers[field.lower()] != value
+            ):
+                self.gcode.run_script_from_command(
+                    "SET_TMC_FIELD "
+                    f"STEPPER={stepper}{stepper_index} "
+                    f"FIELD={field} VALUE={value}"
+                )
         # store the last applied value
         self.registers[field.lower()] = value
 
