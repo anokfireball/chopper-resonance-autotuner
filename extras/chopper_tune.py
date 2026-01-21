@@ -1840,6 +1840,9 @@ class ChopperTune:
                 f"driver={self.driver} "
                 f"sense_resistor={self.sense_resistor}"
             )
+        else:
+            # Save best parameters
+            self.save_configs(best_parameters)
 
         # reset number of samples
         self.number_of_samples = 0
