@@ -1320,7 +1320,7 @@ class ChopperTune:
         max_speed: float,
         speed_change_step: float,
         iterations: int,
-        search_method: str,
+        search_method: SearchMethod,
         a_axis_min: float,
         travel_distance: float,
     ) -> None:
@@ -1343,7 +1343,7 @@ class ChopperTune:
             max_speed (float): The maximum speed value.
             speed_change_step (float): The speed change step value.
             iterations (int): The number of iterations.
-            search_method (str): The search method.
+            search_method (SearchMethod): The search method.
             a_axis_min (float): The minimum position of the main axis.
             travel_distance (float): The travel distance value.
         """
@@ -1543,7 +1543,7 @@ class ChopperTune:
         min_speed: int | str = "default",
         max_speed: int | str = "default",
         speed_change_step: int | str = "default",
-        search_method: str = "default",
+        search_method: SearchMethod = SearchMethod.BruteForce,
         travel_distance: int | str = "default",
         direction: int = 1,
         accel_chip: str = "default",
@@ -1576,9 +1576,9 @@ class ChopperTune:
                 value.
             speed_change_step (int | str): The step in each iteration the speed
                 will be increased to.
-            search_method (str): The search method, can be one of
-                ["brute_force", "adaptive"], or can be set to "default" to
-                use "brute_force".
+            search_method (SearchMethod): The search method, can be one of
+                [SearchMethod.BruteForce, SearchMethod.Adaptive], default value
+                is SearchMethod.BruteForce.
             travel_distance (int | str): The travel distance, or can be set to
                 "default" to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
@@ -1592,16 +1592,11 @@ class ChopperTune:
         Returns:
             bool: True if the command runs without any errors, False otherwise.
         """
-        self.search_method = (
-            "brute_force" if search_method == "default" else search_method
-        )
-        if self.search_method not in ["brute_force", "adaptive"]:
-            raise self.printer.command_error(
-                f"WARNING!!! Unsupported search method: {self.search_method}"
-            )
+        self.search_method = search_method
+
         # Force brute_force in vibration measurement mode
         if self.measurement_mode == MeasurementMode.Resonances:
-            self.search_method = "brute_force"
+            self.search_method = SearchMethod.BruteForce
 
         self.respond_info(f"Selected {self.search_method} as search method")
 
@@ -1764,7 +1759,7 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
 
-        if self.search_method == "adaptive":
+        if self.search_method == SearchMethod.Adaptive:
             # Run adaptive optimization
             _best_parameters = self.run_optimization()
         else:
@@ -1822,7 +1817,7 @@ class ChopperTune:
             f"G0 {axis}{a_axis_mid} F{self.travel_speed}"
         )
         self.toolhead.wait_moves()
-        if self.search_method != "adaptive":
+        if self.search_method != SearchMethod.Adaptive:
             if run_plotter:
                 self.respond_info("Magnitude graphs generation...")
                 self.respond_info("This may take a while, please wait")
@@ -1925,7 +1920,7 @@ class ChopperTune:
         measured_vibrations = calc_magnitude(
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
-        if self.search_method == "adaptive":
+        if self.search_method == SearchMethod.Adaptive:
             os.remove(measurement_data_path)  # no need to keep the file
 
         self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
@@ -2035,7 +2030,7 @@ class ChopperTune:
             search_method = SearchMethod.to_method(
                 gcmd.get("SEARCH_METHOD", "brute_force").lower()
             )
-            # search_method can be default, brute_force or adaptive
+            # search_method can be brute_force or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)
             max_speed = gcmd.get("MAX_SPEED", "default").lower()
