@@ -83,13 +83,13 @@ def test_next_position_core_xy():
     assert pos1.z == pytest.approx(0)
 
     pos2 = generator.next(10.0)
-    assert pos2.x == pytest.approx((2**0.5) / 2 - (10*(2**0.5) / 2))
-    assert pos2.y == pytest.approx((2**0.5) / 2 - (10*(2**0.5) / 2))
+    assert pos2.x == pytest.approx((2**0.5) / 2 + (10*(2**0.5) / 2))
+    assert pos2.y == pytest.approx((2**0.5) / 2 + (10*(2**0.5) / 2))
     assert pos2.z == pytest.approx(0)
 
     pos3 = generator.next(9.0)
-    assert pos3.x == pytest.approx(0)
-    assert pos3.y == pytest.approx(0)
+    assert pos3.x == pytest.approx((2**0.5) / 2 + (10*(2**0.5) / 2) + (9*(2**0.5) / 2))
+    assert pos3.y == pytest.approx((2**0.5) / 2 + (10*(2**0.5) / 2) + (9*(2**0.5) / 2))
     assert pos3.z == pytest.approx(0)
 
 
@@ -108,11 +108,11 @@ def test_next_position_cartesian():
     assert pos1.z == pytest.approx(0)
 
     pos2 = generator.next(10.0)
-    assert pos2.x == pytest.approx(1.0 - 10.0)
+    assert pos2.x == pytest.approx(11.0)
     assert pos2.y == pytest.approx(0)
     assert pos2.z == pytest.approx(0)
 
     pos3 = generator.next(9.0)
-    assert pos3.x == pytest.approx(0)
+    assert pos3.x == pytest.approx(20)
     assert pos3.y == pytest.approx(0)
     assert pos3.z == pytest.approx(0)
