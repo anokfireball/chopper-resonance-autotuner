@@ -20,7 +20,7 @@ import shutil
 import time
 import traceback
 from enum import IntEnum
-from functools import reduce, wraps
+from functools import cache, reduce, wraps
 from typing import TYPE_CHECKING, Callable
 
 # Third-Party Imports
@@ -829,45 +829,45 @@ class ChopperTune:
 
         return None, None
 
-    def get_axes_and_steppers(self, axis: str) -> tuple[list[str], list[str]]:
+    def get_axes_and_steppers(self, axis: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Get main and secondary axis / stepper.
 
         Args:
             axis (str): The to be tuned.
 
         Returns:
-            tuple[list[str], list[str]]: A tuple containing:
-                - axes (list[str]): The main and secondary axis.
-                - steppers (list[str]): The main and secondary stepper.
+            tuple[tuple[str, ...], tuple[str, ...]]: A tuple containing:
+                - axes (tuple[str, ...]): The main and secondary axis.
+                - steppers (tuple[str, ...]): The main and secondary stepper.
         """
-        if axis not in ["x", "y", "z"]:
+        if axis not in ("x", "y", "z"):
             raise self.printer.command_error(f"WARNING!!! Incorrect axis: {axis}")
 
-        if self.kinematics not in ["corexy", "cartesian"]:
+        if self.kinematics not in ("corexy", "cartesian"):
             raise self.printer.command_error(
                 f"WARNING!!! Unsupported kinematics: {self.kinematics}"
             )
 
         if self.kinematics == "corexy":
-            if axis in ["x", "y"]:
+            if axis in ("x", "y"):
                 if axis == "x":
-                    axes = ["x", "y"]
+                    axes = ("x", "y")
                 elif axis == "y":
-                    axes = ["y", "x"]
-                steppers = ["stepper_x", "stepper_y"]
+                    axes = ("y", "x")
+                steppers = ("stepper_x", "stepper_y")
             elif axis == "z":
-                axes = ["z", "x"]
-                steppers = ["stepper_z"]
+                axes = ("z", "x")
+                steppers = ("stepper_z",)
         elif self.kinematics == "cartesian":
             if axis == "x":
-                axes = ["x", "y"]
-                steppers = ["stepper_x"]
+                axes = ("x", "y")
+                steppers = ("stepper_x",)
             elif axis == "y":
-                axes = ["y", "x"]
-                steppers = ["stepper_y"]
+                axes = ("y", "x")
+                steppers = ("stepper_y",)
             elif axis == "z":
-                axes = ["z", "x"]
-                steppers = ["stepper_z"]
+                axes = ("z", "x")
+                steppers = ("stepper_z",)
 
         return axes, steppers
 
@@ -1733,7 +1733,7 @@ class ChopperTune:
         self.accel_chip = accel_chip
         self.steppers = steppers
         self.current = current_min
-        self.static_noise_magnitude = static_noise_magnitude
+        self.static_noise_magnitude = tuple(static_noise_magnitude)  # make it immutable
 
         # bounds
         self.current_min = current_min
@@ -1839,6 +1839,7 @@ class ChopperTune:
 
         return True
 
+    @cache
     def execute_vibration_measurement(
         self,
         speed: float,
@@ -1846,7 +1847,7 @@ class ChopperTune:
         travel_distance: float,
         coord_generator: CoordGenerator,
         accel_chip: str,
-        steppers: list[str],
+        steppers: tuple[str, ...],
         static_noise_magnitude: float,
         iteration: int,
         current: int,
