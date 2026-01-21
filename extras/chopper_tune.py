@@ -175,14 +175,14 @@ class SearchMethod(IntEnum):
             method_name_lut = {m.name.lower(): m.name for m in cls}
             method_name_lut.update({m.value: m.name for m in cls})
             method_lower_case = method.lower()
-            if method_lower_case not in method_name_lut:
+            if method_lower_case.replace("_", "") not in method_name_lut:
                 raise ValueError(
                     "method should be a SearchMethod enum value or one of "
                     f"{[m.name for m in cls] + [m.value for m in cls]}, "
                     f"not '{method}'"
                 )
 
-            return cls.__members__[method_name_lut[method_lower_case]]
+            return cls.__members__[method_name_lut[method_lower_case.replace("_", "")]]
 
         return method
 
@@ -2032,7 +2032,9 @@ class ChopperTune:
             tpfd_min = int(gcmd.get("TPFD_MIN", -1))
             tpfd_max = int(gcmd.get("TPFD_MAX", -1))
             min_speed = gcmd.get("MIN_SPEED", "default").lower()
-            search_method = gcmd.get("SEARCH_METHOD", "brute_force").lower()
+            search_method = SearchMethod.to_method(
+                gcmd.get("SEARCH_METHOD", "brute_force").lower()
+            )
             # search_method can be default, brute_force or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)

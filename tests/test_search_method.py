@@ -102,6 +102,14 @@ def test_to_method_method_is_not_a_valid_str():
         ["BRUTEFORCE", SearchMethod.BruteForce],
         ["BrUtEfOrCe", SearchMethod.BruteForce],
         ["bRuTeFoRcE", SearchMethod.BruteForce],
+
+        # Brute_Force
+        ["Brute_Force", SearchMethod.BruteForce],
+        ["brute_force", SearchMethod.BruteForce],
+        ["BRUTE_FORCE", SearchMethod.BruteForce],
+        ["BrUtE_FoRcE", SearchMethod.BruteForce],
+        ["bRuTe_fOrCe", SearchMethod.BruteForce],
+
         [0, SearchMethod.BruteForce],
         # Adaptive
         ["Adaptive", SearchMethod.Adaptive],
