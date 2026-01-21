@@ -2112,6 +2112,32 @@ class ChopperTune:
 
         return overall_best_params
 
+    def save_configs(self, best_parameters: dict | None) -> None:
+        """Save the best parameters to printer.cfg.
+
+        Args:
+            best_parameters (dict | None): The best parameters found.
+        """
+        if best_parameters is None:
+            return
+
+        for field, value in best_parameters.items():
+            if field == "tpfd" and self.driver not in ["2240", "5160"]:
+                continue  # skip tpfd for unsupported drivers
+
+            field_name = f"driver_{field}" if field != "current" else "run_current"
+            value = str(value) if field != "current" else f"{value / 1000:0.2f}"
+
+            self.configfile.set(
+                f"tmc{self.driver} {self.steppers[0]}",
+                field_name,
+                value,
+            )
+
+        self.respond_info(
+            "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
+        )
+
     @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
         """Tune stepper values.
