@@ -853,9 +853,10 @@ class ChopperTune:
             if axis in ("x", "y"):
                 if axis == "x":
                     axes = ("x", "y")
+                    steppers = ("stepper_x", "stepper_y")
                 elif axis == "y":
                     axes = ("y", "x")
-                steppers = ("stepper_x", "stepper_y")
+                    steppers = ("stepper_y", "stepper_x")
             elif axis == "z":
                 axes = ("z", "x")
                 steppers = ("stepper_z",)
