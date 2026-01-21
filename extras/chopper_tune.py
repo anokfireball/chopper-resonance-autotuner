@@ -238,6 +238,35 @@ class AccelerometerMeasure:
 
         return destination
 
+    def get_full_path(self) -> str:
+        """Get the data full path.
+
+        Before returning the data path, ensure the file has been written.
+
+        Returns:
+            str: The final destination path of the measurement file.
+        """
+        start_time = time.time()
+        max_wait_time = 10  # seconds
+        prev_size = -1
+        curr_size = (
+            0
+            if not os.path.exists(self.full_path)
+            else os.path.getsize(self.full_path)
+        )
+        while not os.path.exists(self.full_path) or prev_size != curr_size:
+            time.sleep(0.1)
+            if os.path.exists(self.full_path):
+                prev_size = curr_size
+                curr_size = os.path.getsize(self.full_path)
+            if (time.time() - start_time) > max_wait_time:
+                break
+
+        if not os.path.exists(self.full_path):
+            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
+
+        return self.full_path
+
 
 class Coord(list):
     """Custom "list" class for coordinates - add easy access to x, y, z components.
@@ -509,17 +538,17 @@ def calc_static_magnitude(data_path: str) -> np.ndarray:
     Returns:
         np.ndarray: Mean static acceleration values for x, y, z axes.
     """
-    start_time = time.time()
-    max_wait_time = 10  # seconds
-    prev_size = -1
-    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    while not os.path.exists(data_path) or prev_size != curr_size:
-        time.sleep(0.1)  # sleep while the file is getting written
-        if os.path.exists(data_path):
-            prev_size = curr_size
-            curr_size = os.path.getsize(data_path)
-        if (time.time() - start_time) > max_wait_time:
-            break
+    # start_time = time.time()
+    # max_wait_time = 10  # seconds
+    # prev_size = -1
+    # curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    # while not os.path.exists(data_path) or prev_size != curr_size:
+    #     time.sleep(0.1)  # sleep while the file is getting written
+    #     if os.path.exists(data_path):
+    #         prev_size = curr_size
+    #         curr_size = os.path.getsize(data_path)
+    #     if (time.time() - start_time) > max_wait_time:
+    #         break
 
     with open(data_path) as file:
         data = np.array(
@@ -542,17 +571,17 @@ def calc_magnitude(data_path: str, static_data: np.ndarray) -> float:
     Returns:
         float: Median magnitude of acceleration data.
     """
-    start_time = time.time()
-    max_wait_time = 10  # seconds
-    prev_size = -1
-    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    while not os.path.exists(data_path) or prev_size != curr_size:
-        time.sleep(0.1)  # sleep while the file is getting written
-        if os.path.exists(data_path):
-            prev_size = curr_size
-            curr_size = os.path.getsize(data_path)
-        if (time.time() - start_time) > max_wait_time:
-            break
+    # start_time = time.time()
+    # max_wait_time = 10  # seconds
+    # prev_size = -1
+    # curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    # while not os.path.exists(data_path) or prev_size != curr_size:
+    #     time.sleep(0.1)  # sleep while the file is getting written
+    #     if os.path.exists(data_path):
+    #         prev_size = curr_size
+    #         curr_size = os.path.getsize(data_path)
+    #     if (time.time() - start_time) > max_wait_time:
+    #         break
 
     with open(data_path) as file:
         data = (
@@ -1329,8 +1358,12 @@ class ChopperTune:
         # Wait for another 1 second for the whole data to be written
         self.gcode.run_script_from_command("G4 P1000")
         self.toolhead.wait_moves()
-        # move the measurement file to the DATA_FOLDER
-        measurement_data_path = accelerometer_measurement.move()
+        if self.search_method == "brute_force":
+            # move the measurement file to the DATA_FOLDER
+            measurement_data_path = accelerometer_measurement.move()
+        else:
+            # no need to keep the file in adaptive mode so use it from /tmp
+            measurement_data_path = accelerometer_measurement.get_full_path()
         self.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
             duration = time.time() - start_time
@@ -1386,8 +1419,12 @@ class ChopperTune:
         coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
 
-        # move the measurement file to the DATA_FOLDER
-        measurement_data_path = accelerometer_measurement.move()
+        if self.search_method == "brute_force":
+            # move the measurement file to the DATA_FOLDER
+            measurement_data_path = accelerometer_measurement.move()
+        else:
+            # no need to keep the file in adaptive mode so use it from /tmp
+            measurement_data_path = accelerometer_measurement.get_full_path()
         # self.respond_info(f"Accel. data: {measurement_data_path}")
 
         return measurement_data_path
@@ -1484,8 +1521,8 @@ class ChopperTune:
             speed_change_step (int | str): The step in each iteration the speed
                 will be increased to.
             search_method (str): The search method, can be one of
-                ["bruteforce", "adaptive"], or can be set to "default" to
-                use "bruteforce".
+                ["brute_force", "adaptive"], or can be set to "default" to
+                use "brute_force".
             travel_distance (int | str): The travel distance, or can be set to
                 "default" to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
@@ -1497,9 +1534,9 @@ class ChopperTune:
             bool: True if the command runs without any errors, False otherwise.
         """
         self.search_method = (
-            "bruteforce" if search_method == "default" else search_method
+            "brute_force" if search_method == "default" else search_method
         )
-        if self.search_method not in ["bruteforce", "adaptive"]:
+        if self.search_method not in ["brute_force", "adaptive"]:
             raise self.printer.command_error(
                 f"WARNING!!! Unsupported search method: {self.search_method}"
             )
@@ -1665,9 +1702,9 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
 
-        # Force bruteforce in vibration measurement mode
+        # Force brute_force in vibration measurement mode
         if self.measurement_mode == MeasurementMode.Resonances:
-            self.search_method = "bruteforce"
+            self.search_method = "brute_force"
 
         if self.search_method == "adaptive":
             # Run adaptive optimization
@@ -1725,24 +1762,25 @@ class ChopperTune:
         self.gcode.run_script_from_command("G4 P500")
         self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{self.travel_speed}")
         self.toolhead.wait_moves()
-        if run_plotter:
-            self.respond_info("Magnitude graphs generation...")
-            self.respond_info("This may take a while, please wait")
-            # export data to processing
-            self.gcode.run_script_from_command(
+        if self.search_method != "adaptive":
+            if run_plotter:
+                self.respond_info("Magnitude graphs generation...")
+                self.respond_info("This may take a while, please wait")
+                # export data to processing
+                self.gcode.run_script_from_command(
+                    "RUN_SHELL_COMMAND CMD=chop_tune "
+                    f"PARAMS='iterations={self.iterations} "
+                    f"driver={driver} "
+                    f"sense_resistor={sense_resistor}'"
+                )
+            # output data info
+            self.respond_info(
+                "To run parser manually; type - "
                 "RUN_SHELL_COMMAND CMD=chop_tune "
                 f"PARAMS='iterations={self.iterations} "
                 f"driver={driver} "
-                f"sense_resistor={sense_resistor}'"
+                f"sense_resistor={sense_resistor}"
             )
-        # output data info
-        self.respond_info(
-            "To run parser manually; type - "
-            "RUN_SHELL_COMMAND CMD=chop_tune "
-            f"PARAMS='iterations={self.iterations} "
-            f"driver={driver} "
-            f"sense_resistor={sense_resistor}"
-        )
 
         return True
 
@@ -1827,6 +1865,8 @@ class ChopperTune:
         measured_vibrations = calc_magnitude(
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
+        if self.search_method == "adaptive":
+            os.remove(measurement_data_path)  # no need to keep the file
 
         self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
         return measured_vibrations
@@ -1929,8 +1969,8 @@ class ChopperTune:
             tpfd_min = int(gcmd.get("TPFD_MIN", -1))
             tpfd_max = int(gcmd.get("TPFD_MAX", -1))
             min_speed = gcmd.get("MIN_SPEED", "default").lower()
-            search_method = gcmd.get("SEARCH_METHOD", "bruteforce").lower()
-            # search_method can be default, bruteforce or adaptive
+            search_method = gcmd.get("SEARCH_METHOD", "brute_force").lower()
+            # search_method can be default, brute_force or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)
             max_speed = gcmd.get("MAX_SPEED", "default").lower()
