@@ -32,13 +32,14 @@ And if for some reason not, then install [manually](/wiki/manual_install_en.md).
    1. We determine the resonant speeds by entering the command:
 
       ```G-code
-      CHOPPER_TUNE FIND_RESONANCES=1
+      CHOPPER_TUNE FIND_RESONANCES=1 DIRECTION=1
       ```
 
       into the web terminal.
 
-   2. After the macro is completed, the algorithm will automatically generate a
-      table of data and graphics, place them in the `.../adxl_results/chopper_magnitude/`
+   2. After the macro is completed, the algorithm will report the speed that
+      has the maximum resonances and automatically generate a table of data and
+      graphics, place them in the `.../adxl_results/chopper_magnitude/`
       directory, download and open `interactive_plot_*.html`, and see the
       following picture:
 
@@ -168,7 +169,20 @@ minimum required ones.
    done at the most resonant speed and the system finds the best register
    values for the lowest vibrations/noise. Values: `(True / False), (1 / 0)`
 
-10. `RUN_PLOTTER`
+10. `DIRECTON`
+
+   The measurement direction. If set to 1 the measurement will be done towards
+   the positive direction, and if set to -1 the measurement will be done
+   towards the negative direction. Values: `(1 / -1)`.
+
+11. `SEARCH_METHOD`
+
+   The iteration method to use when looking for the next values for chopper
+   parameters. Defaults to `bruteforce`. Adaptive uses an adaptive optimization
+   algorithm which generally works ~10-20x faster in finding the smallest
+   vibration parameters. Values: `bruteforce / adaptive`.
+
+12. `RUN_PLOTTER`
 
    Rrun the graph generation script. Values - `(True / False), (1 / 0)`
 

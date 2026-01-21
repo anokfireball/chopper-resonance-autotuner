@@ -120,9 +120,7 @@ class MeasurementMode(IntEnum):
             )
         if isinstance(mode, str):
             mode_name_lut = {m.name.lower(): m.name for m in cls}
-            mode_name_lut.update(
-                {m.value: m.name for m in cls}
-            )
+            mode_name_lut.update({m.value: m.name for m in cls})
             mode_lower_case = mode.lower()
             if mode_lower_case not in mode_name_lut:
                 raise ValueError(
@@ -134,6 +132,59 @@ class MeasurementMode(IntEnum):
             return cls.__members__[mode_name_lut[mode_lower_case]]
 
         return mode
+
+
+class SearchMethod(IntEnum):
+    """Integer enumerator to specify the current search method."""
+
+    BruteForce = 0
+    Adaptive = 1
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation of this SearchMethod.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+    @classmethod
+    def to_method(cls, method: int | str | SearchMethod) -> SearchMethod:
+        """Convert the given method value to a SearchMethod enum.
+
+        Args:
+            method (int | str | SearchMethod]): The value to convert to a
+                SearchMethod.
+
+        Raises:
+            TypeError: Input value type is invalid.
+            ValueError: Input value is invalid.
+
+        Returns:
+            SearchMethod: The enum.
+        """
+        if not isinstance(method, (int, str, SearchMethod)):
+            raise TypeError(
+                "method should be a SearchMethod enum value or one of "
+                f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                f"not {method.__class__.__name__}: '{method}'"
+            )
+        if isinstance(method, str):
+            method_name_lut = {m.name.lower(): m.name for m in cls}
+            method_name_lut.update({m.value: m.name for m in cls})
+            method_lower_case = method.lower()
+            if method_lower_case.replace("_", "") not in method_name_lut:
+                raise ValueError(
+                    "method should be a SearchMethod enum value or one of "
+                    f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                    f"not '{method}'"
+                )
+
+            return cls.__members__[method_name_lut[method_lower_case.replace("_", "")]]
+
+        return method
 
 
 class AccelerometerMeasure:
@@ -237,6 +288,33 @@ class AccelerometerMeasure:
         move_proc.start()
 
         return destination
+
+    def get_full_path(self) -> str:
+        """Get the data full path.
+
+        Before returning the data path, ensure the file has been written.
+
+        Returns:
+            str: The final destination path of the measurement file.
+        """
+        start_time = time.time()
+        max_wait_time = 10  # seconds
+        prev_size = -1
+        curr_size = (
+            0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
+        )
+        while not os.path.exists(self.full_path) or prev_size != curr_size:
+            time.sleep(0.1)
+            if os.path.exists(self.full_path):
+                prev_size = curr_size
+                curr_size = os.path.getsize(self.full_path)
+            if (time.time() - start_time) > max_wait_time:
+                break
+
+        if not os.path.exists(self.full_path):
+            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
+
+        return self.full_path
 
 
 class Coord(list):
@@ -496,7 +574,6 @@ class CoordGenerator:
             float: The next position.
         """
         self.current_coord += self.direction * travel_distance
-        self.switch_direction()
         return self.current_coord
 
 
@@ -620,17 +697,21 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
+        self.number_of_samples = 0
 
         # Calculated values
         self.search_method = None
         self.measurement_mode = MeasurementMode.Vibrations
         self.max_speed = None
+        self.travel_speed = None
         self.travel_distance = None
         self.coord_generator = None
         self.accel_chip = None
         self.steppers = None
         self.current = None
         self.static_noise_magnitude = None
+        self.initial_position = None
+        self.initial_direction = None
 
         # Bounds
         self.bounds = []
@@ -915,10 +996,14 @@ class ChopperTune:
                     )
 
                 if field.lower() == "curr":
-                    self.gcode.run_script_from_command(
-                        f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                    )
-                elif not (field == "tpfd" and value == -1):
+                    if self.registers[field.lower()] != value:
+                        self.gcode.run_script_from_command(
+                            f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
+                        )
+                elif (
+                    not (field == "tpfd" and value == -1)
+                    and self.registers[field.lower()] != value
+                ):
                     self.gcode.run_script_from_command(
                         "SET_TMC_FIELD "
                         f"STEPPER={stepper}{stepper_index} "
@@ -1235,7 +1320,7 @@ class ChopperTune:
         max_speed: float,
         speed_change_step: float,
         iterations: int,
-        search_method: str,
+        search_method: SearchMethod,
         a_axis_min: float,
         travel_distance: float,
     ) -> None:
@@ -1258,7 +1343,7 @@ class ChopperTune:
             max_speed (float): The maximum speed value.
             speed_change_step (float): The speed change step value.
             iterations (int): The number of iterations.
-            search_method (str): The search method.
+            search_method (SearchMethod): The search method.
             a_axis_min (float): The minimum position of the main axis.
             travel_distance (float): The travel distance value.
         """
@@ -1267,34 +1352,36 @@ class ChopperTune:
             self.respond_info(
                 f"Final max travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
-                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                f"Start find resonances mode ({search_method}), "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
-                f"{speed_change_step:.2f} step "
-                f"current={current_min} mA "
-                f"TBL={tbl_min} "
-                f"TOFF={toff_min} "
-                f"HSTRT={hstrt_min} "
-                f"HEND={hend_min}"
+                f"Start find resonances mode\n"
+                f"Method     : {search_method}\n"
+                f"speed      : {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
+                f"{speed_change_step:.2f} step\n"
+                f"current    : {current_min} mA\n"
+                f"TBL        : {tbl_min}\n"
+                f"TOFF       : {toff_min}\n"
+                f"HSTRT      : {hstrt_min}\n"
+                f"HEND       : {hend_min}"
             )
         else:
             self.respond_info(
                 f"Final travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
-                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                f"Start of register enumeration mode ({search_method}), "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
-                f"current: {current_min} --> {current_max} mA "
-                f"iterations: {iterations} "
-                f"TBL: {tbl_min} --> {tbl_max} "
-                f"TOFF: {toff_min} --> {toff_max} "
-                f"HSTRT: {hstrt_min} --> {hstrt_max} "
-                f"HEND: {hend_min} --> {hend_max} "
-                f"TPFD: {tpfd_min} --> {tpfd_max}"
+                "Start of register enumeration mode\n"
+                f"Method     : {search_method}\n"
+                f"speed      : {min_speed:.2f}  --> {max_speed:.2f}  mm/s\n"
+                f"current    : {current_min} --> {current_max} mA\n"
+                f"iterations : {iterations}\n"
+                f"TBL        : {tbl_min} --> {tbl_max}\n"
+                f"TOFF       : {toff_min} --> {toff_max}\n"
+                f"HSTRT      : {hstrt_min} --> {hstrt_max}\n"
+                f"HEND       : {hend_min} --> {hend_max}\n"
+                f"TPFD       : {tpfd_min} --> {tpfd_max}"
             )
 
     def home(self) -> None:
@@ -1325,8 +1412,12 @@ class ChopperTune:
         # Wait for another 1 second for the whole data to be written
         self.gcode.run_script_from_command("G4 P1000")
         self.toolhead.wait_moves()
-        # move the measurement file to the DATA_FOLDER
-        measurement_data_path = accelerometer_measurement.move()
+        if self.search_method == "brute_force":
+            # move the measurement file to the DATA_FOLDER
+            measurement_data_path = accelerometer_measurement.move()
+        else:
+            # no need to keep the file in adaptive mode so use it from /tmp
+            measurement_data_path = accelerometer_measurement.get_full_path()
         self.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
             duration = time.time() - start_time
@@ -1361,20 +1452,36 @@ class ChopperTune:
             name=name,
         ) as accelerometer_measurement:
             # go in both directions at once
-            for _ in range(2):
-                next_coord = coord_generator.next(travel_distance)
-                self.gcode.run_script_from_command(
-                    "G0 "
-                    f"X{next_coord.x:0.2f} "
-                    f"Y{next_coord.y:0.2f} "
-                    f"Z{next_coord.z:0.2f} "
-                    f"F{speed * 60}"
-                )
+            next_coord = coord_generator.next(travel_distance)
+            self.gcode.run_script_from_command(
+                "G0 "
+                f"X{next_coord.x:0.2f} "
+                f"Y{next_coord.y:0.2f} "
+                f"Z{next_coord.z:0.2f} "
+                f"F{speed * 60}"
+            )
+        # Move to the initial position
+        self.gcode.run_script_from_command(
+            "G0 "
+            f"X{self.initial_position.x:0.2f} "
+            f"Y{self.initial_position.y:0.2f} "
+            f"Z{self.initial_position.z:0.2f} "
+            f"F{self.travel_speed}"
+        )
+        coord_generator.current_coord.x = self.initial_position.x
+        coord_generator.current_coord.y = self.initial_position.y
+        coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
 
-        # move the measurement file to the DATA_FOLDER
-        measurement_data_path = accelerometer_measurement.move()
-        self.respond_info(f"Accel. data: {measurement_data_path}")
+        if self.search_method == "brute_force":
+            # move the measurement file to the DATA_FOLDER
+            measurement_data_path = accelerometer_measurement.move()
+        else:
+            # no need to keep the file in adaptive mode so use it from /tmp
+            measurement_data_path = accelerometer_measurement.get_full_path()
+        # self.respond_info(f"Accel. data: {measurement_data_path}")
+
+        self.number_of_samples += 1
 
         return measurement_data_path
 
@@ -1436,8 +1543,9 @@ class ChopperTune:
         min_speed: int | str = "default",
         max_speed: int | str = "default",
         speed_change_step: int | str = "default",
-        search_method: str = "default",
+        search_method: SearchMethod = SearchMethod.BruteForce,
         travel_distance: int | str = "default",
+        direction: int = 1,
         accel_chip: str = "default",
         run_plotter: bool = True,
     ) -> bool:
@@ -1468,12 +1576,15 @@ class ChopperTune:
                 value.
             speed_change_step (int | str): The step in each iteration the speed
                 will be increased to.
-            search_method (str): The search method, can be one of
-                ["bruteforce", "adaptive"], or can be set to "default" to
-                use "bruteforce".
+            search_method (SearchMethod): The search method, can be one of
+                [SearchMethod.BruteForce, SearchMethod.Adaptive], default value
+                is SearchMethod.BruteForce.
             travel_distance (int | str): The travel distance, or can be set to
                 "default" to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
+            direction (int): The movement direction, can be 1 or -1.
+                1 means starting from the minimum position to maximum position,
+                -1 means starting from the maximum position to minimum position.
             accel_chip (str): The name of the acceleration chip.
             run_plotter (bool): If set to True, the magnitude graphs will be
                 generated after the vibration measurements are completed.
@@ -1481,13 +1592,11 @@ class ChopperTune:
         Returns:
             bool: True if the command runs without any errors, False otherwise.
         """
-        self.search_method = (
-            "bruteforce" if search_method == "default" else search_method
-        )
-        if self.search_method not in ["bruteforce", "adaptive"]:
-            raise self.printer.command_error(
-                f"WARNING!!! Unsupported search method: {self.search_method}"
-            )
+        self.search_method = search_method
+
+        # Force brute_force in vibration measurement mode
+        if self.measurement_mode == MeasurementMode.Resonances:
+            self.search_method = SearchMethod.BruteForce
 
         self.respond_info(f"Selected {self.search_method} as search method")
 
@@ -1496,13 +1605,13 @@ class ChopperTune:
         # Find the steppers count of the main axis
         self.registers["stepper_count"] = self.get_stepper_count(axis)
 
-        driver, sense_resistor = self.detect_driver(stepper=axis)
-        self.validate_tpfd_values(driver, tpfd_min, tpfd_max)
+        self.driver, self.sense_resistor = self.detect_driver(stepper=axis)
+        self.validate_tpfd_values(self.driver, tpfd_min, tpfd_max)
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
         a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.get_axis_limits(axes)
-        acceleration, travel_speed = self.get_travel_speed_and_acceleration(axes)
+        acceleration, self.travel_speed = self.get_travel_speed_and_acceleration(axes)
         accel_chip = self.get_accelerometer_chip(accel_chip)
 
         current_min, current_max = self.get_current_range(
@@ -1573,17 +1682,19 @@ class ChopperTune:
         home_pos = Coord(self.toolhead.get_position())
 
         # Get initial position and direction
-        initial_position = {
+        self.initial_position = {
             "x": Coord((a_axis_mid, b_axis_mid, home_pos.z)),
             "y": Coord((b_axis_mid, a_axis_mid, home_pos.z)),
             "z": Coord((b_axis_mid, home_pos.y, a_axis_mid)),
         }[axes[0]]
-        initial_direction = self.get_initial_direction(axes)
+        self.initial_direction = self.get_initial_direction(axes)
+        if direction == -1:
+            self.initial_direction = self.initial_direction * -1
 
         # if this is not running in "find resonances" mode,
         # move away from the middle exactly half or a travel distance
         # if measurement_mode == MeasurementMode.Vibrations:
-        initial_position -= initial_direction * (travel_distance / 2)
+        self.initial_position -= self.initial_direction * (travel_distance / 2)
 
         self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
         self.gcode.run_script_from_command(
@@ -1592,10 +1703,10 @@ class ChopperTune:
         # Move to the initial position
         self.gcode.run_script_from_command(
             "G0 "
-            f"X{initial_position.x:0.2f} "
-            f"Y{initial_position.y:0.2f} "
-            f"Z{initial_position.z:0.2f} "
-            f"F{travel_speed}"
+            f"X{self.initial_position.x:0.2f} "
+            f"Y{self.initial_position.y:0.2f} "
+            f"Z{self.initial_position.z:0.2f} "
+            f"F{self.travel_speed}"
         )
 
         # Clean csv files while going to the initial position
@@ -1610,7 +1721,8 @@ class ChopperTune:
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
-            direction=initial_direction, start_coord=initial_position
+            direction=self.initial_direction,
+            start_coord=self.initial_position,
         )
 
         # calculated vars
@@ -1647,11 +1759,7 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
 
-        # Force bruteforce in vibration measurement mode
-        if self.measurement_mode == MeasurementMode.Resonances:
-            self.search_method = "bruteforce"
-
-        if self.search_method == "adaptive":
+        if self.search_method == SearchMethod.Adaptive:
             # Run adaptive optimization
             _best_parameters = self.run_optimization()
         else:
@@ -1705,26 +1813,29 @@ class ChopperTune:
                 )
 
         self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{travel_speed}")
+        self.gcode.run_script_from_command(
+            f"G0 {axis}{a_axis_mid} F{self.travel_speed}"
+        )
         self.toolhead.wait_moves()
-        if run_plotter:
-            self.respond_info("Magnitude graphs generation...")
-            self.respond_info("This may take a while, please wait")
-            # export data to processing
-            self.gcode.run_script_from_command(
+        if self.search_method != SearchMethod.Adaptive:
+            if run_plotter:
+                self.respond_info("Magnitude graphs generation...")
+                self.respond_info("This may take a while, please wait")
+                # export data to processing
+                self.gcode.run_script_from_command(
+                    "RUN_SHELL_COMMAND CMD=chop_tune "
+                    f"PARAMS='iterations={self.iterations} "
+                    f"driver={self.driver} "
+                    f"sense_resistor={self.sense_resistor}'"
+                )
+            # output data info
+            self.respond_info(
+                "To run parser manually; type - "
                 "RUN_SHELL_COMMAND CMD=chop_tune "
                 f"PARAMS='iterations={self.iterations} "
-                f"driver={driver} "
-                f"sense_resistor={sense_resistor}'"
+                f"driver={self.driver} "
+                f"sense_resistor={self.sense_resistor}"
             )
-        # output data info
-        self.respond_info(
-            "To run parser manually; type - "
-            "RUN_SHELL_COMMAND CMD=chop_tune "
-            f"PARAMS='iterations={self.iterations} "
-            f"driver={driver} "
-            f"sense_resistor={sense_resistor}"
-        )
 
         return True
 
@@ -1809,6 +1920,8 @@ class ChopperTune:
         measured_vibrations = calc_magnitude(
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
+        if self.search_method == SearchMethod.Adaptive:
+            os.remove(measurement_data_path)  # no need to keep the file
 
         self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
         return measured_vibrations
@@ -1843,6 +1956,7 @@ class ChopperTune:
             )
             total_vibrations += measured_vibrations
         total_vibrations /= self.iterations
+        self.respond_info(f"Mean vibrations: {total_vibrations:0.2f}")
         return total_vibrations
 
     def run_optimization(self) -> list[int]:
@@ -1873,15 +1987,18 @@ class ChopperTune:
         duration = time.time() - start_time
         self.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
-            f"Best Score: {result.fun}\n"
-            "Parameters: "
-            f"current= {best_params[0]}, "
-            f"tbl={best_params[1]}, "
-            f"toff={best_params[2]}, "
-            f"hstrt={best_params[3]}, "
-            f"hend={best_params[4]} "
-            f"tpfd={best_params[5]}"
+            f"Number of samples : {self.number_of_samples}\n"
+            f"Best Score        : {result.fun:.2f}\n\n"
+            "Parameters\n"
+            "----------\n"
+            f"current      : {best_params[0]}\n"
+            f"driver_tbl   : {best_params[1]}\n"
+            f"driver_toff  : {best_params[2]}\n"
+            f"driver_hstrt : {best_params[3]}\n"
+            f"driver_hend  : {best_params[4]}\n"
         )
+        if self.driver in ["2240", "5160"]:
+            self.respond_info(f"driver_tpfd : {best_params[5]}")
         return best_params
 
     @gcmd_grabber
@@ -1910,8 +2027,10 @@ class ChopperTune:
             tpfd_min = int(gcmd.get("TPFD_MIN", -1))
             tpfd_max = int(gcmd.get("TPFD_MAX", -1))
             min_speed = gcmd.get("MIN_SPEED", "default").lower()
-            search_method = gcmd.get("SEARCH_METHOD", "default").lower()
-            # search_method can be default, bruteforce or adaptive
+            search_method = SearchMethod.to_method(
+                gcmd.get("SEARCH_METHOD", "brute_force").lower()
+            )
+            # search_method can be brute_force or adaptive
             if IS_DIGIT.match(min_speed):
                 min_speed = float(min_speed)
             max_speed = gcmd.get("MAX_SPEED", "default").lower()
@@ -1921,6 +2040,7 @@ class ChopperTune:
             if IS_DIGIT.match(speed_change_step):
                 speed_change_step = float(speed_change_step)
             self.iterations = int(gcmd.get("ITERATIONS", 1))
+            direction = int(gcmd.get("DIRECTION", 1))
             travel_distance = gcmd.get("TRAVEL_DISTANCE", "default").lower()
             if IS_DIGIT.match(travel_distance):
                 travel_distance = float(travel_distance)
@@ -1961,6 +2081,7 @@ class ChopperTune:
                 speed_change_step=speed_change_step,
                 search_method=search_method,
                 travel_distance=travel_distance,
+                direction=direction,
                 accel_chip=accel_chip,
                 run_plotter=run_plotter,
             )
