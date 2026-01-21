@@ -1412,7 +1412,7 @@ class ChopperTune:
         # Wait for another 1 second for the whole data to be written
         self.gcode.run_script_from_command("G4 P1000")
         self.toolhead.wait_moves()
-        if self.search_method == "brute_force":
+        if self.search_method == SearchMethod.BruteForce:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
         else:
@@ -1473,7 +1473,7 @@ class ChopperTune:
         coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
 
-        if self.search_method == "brute_force":
+        if self.search_method == SearchMethod.BruteForce:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
         else:
@@ -1548,7 +1548,7 @@ class ChopperTune:
         direction: int = 1,
         accel_chip: str = "default",
         run_plotter: bool = True,
-    ) -> bool:
+    ) -> None | dict:
         """Measure vibrations and tune stepper motors for low noise.
 
         Args:
@@ -1590,7 +1590,8 @@ class ChopperTune:
                 generated after the vibration measurements are completed.
 
         Returns:
-            bool: True if the command runs without any errors, False otherwise.
+            None | dict: The best parameters found, or None if tuning was not
+                done using the adaptive method.
         """
         self.search_method = search_method
 
@@ -1717,7 +1718,7 @@ class ChopperTune:
 
         # Measure accelerometer noise
         static_data_path = self.measure_accelerometer_noise(accel_chip)
-        static_noise_magnitude = calc_static_magnitude(static_data_path)
+        static_noise_magnitude = tuple(calc_static_magnitude(static_data_path))
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
@@ -1733,7 +1734,7 @@ class ChopperTune:
         self.accel_chip = accel_chip
         self.steppers = steppers
         self.current = current_min
-        self.static_noise_magnitude = tuple(static_noise_magnitude)  # make it immutable
+        self.static_noise_magnitude = static_noise_magnitude  # make it immutable
 
         # bounds
         self.current_min = current_min
@@ -1758,10 +1759,10 @@ class ChopperTune:
             (self.hend_min, self.hend_max),
             (self.tpfd_min, self.tpfd_max),
         ]
-
+        best_parameters = None
         if self.search_method == SearchMethod.Adaptive:
             # Run adaptive optimization
-            _best_parameters = self.run_optimization()
+            best_parameters = self.run_optimization()
         else:
             # Brute-force search
             speed_vs_vibrations = []
@@ -1837,7 +1838,7 @@ class ChopperTune:
                 f"sense_resistor={self.sense_resistor}"
             )
 
-        return True
+        return best_parameters
 
     @cache
     def execute_vibration_measurement(
@@ -1924,7 +1925,7 @@ class ChopperTune:
         if self.search_method == SearchMethod.Adaptive:
             os.remove(measurement_data_path)  # no need to keep the file
 
-        self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
+        self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f} mm/s²")
         return measured_vibrations
 
     def objective_function(self, params: list[float]) -> float:
@@ -1957,14 +1958,14 @@ class ChopperTune:
             )
             total_vibrations += measured_vibrations
         total_vibrations /= self.iterations
-        self.respond_info(f"Mean vibrations: {total_vibrations:0.2f}")
+        self.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
         return total_vibrations
 
     def run_optimization(self) -> list[int]:
         """Run the optimization process.
 
         Returns:
-            list[int]: The best parameters found.
+            dict: The best parameters found.
         """
         # TODO: Use a for-loop to do multi-step optimization with narrowed bounds
         self.respond_info("Starting optimization 1/2...")
@@ -2096,7 +2097,7 @@ class ChopperTune:
         # clear the cache for the next runs
         self.execute_vibration_measurement.cache_clear()
 
-        return best_params
+        return overall_best_params
 
     @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
