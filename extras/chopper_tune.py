@@ -1841,6 +1841,8 @@ class ChopperTune:
                 f"sense_resistor={self.sense_resistor}"
             )
 
+        # reset number of samples
+        self.number_of_samples = 0
         return best_parameters
 
     @cache
