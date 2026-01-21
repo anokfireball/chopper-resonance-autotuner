@@ -1966,14 +1966,36 @@ class ChopperTune:
         Returns:
             list[int]: The best parameters found.
         """
-        self.respond_info("Starting optimization...")
+        # TODO: Use a for-loop to do multi-step optimization with narrowed bounds
+        self.respond_info("Starting optimization 1/2...")
         start_time = time.time()
+        overall_start_time = start_time
 
         # 'strategy' and 'popsize' are tuned to reduce total measurements
         # 'tol' can be higher since our parameters are discrete
+
+        # Do a two-step optimization to speed up the process
+        # First run, lock all params except toff and hend
+        partial_bounds = [
+            (self.current_min, self.current_min),  # lock current
+            (self.tbl_min, self.tbl_min),  # lock current
+            (self.toff_min, self.toff_max),
+            (self.hstrt_min, self.hstrt_min),  # lock current
+            (self.hend_min, self.hend_max),
+            (self.tpfd_min, self.tpfd_min),  # lock current
+        ]
+
+        # set initial values
+        self.apply_registers(steppers=self.steppers, field="curr", value=self.current_min)
+        self.apply_registers(steppers=self.steppers, field="tbl", value=self.tbl_min)
+        self.apply_registers(steppers=self.steppers, field="toff", value=self.toff_min)
+        self.apply_registers(steppers=self.steppers, field="hend", value=self.hend_min)
+        self.apply_registers(steppers=self.steppers, field="hstrt", value=self.hstrt_min)
+        self.apply_registers(steppers=self.steppers, field="tpfd", value=self.tpfd_min)
+
         result = differential_evolution(
             self.objective_function,
-            self.bounds,
+            partial_bounds,
             init="sobol",
             strategy="best1bin",
             maxiter=10,
@@ -1986,20 +2008,90 @@ class ChopperTune:
 
         best_params = [round(p) for p in result.x]
         duration = time.time() - start_time
+        first_run_duration = duration
+
+        overall_best_params = {
+            "current": best_params[0],
+            "tbl": best_params[1],
+            "toff": best_params[2],
+            "hstrt": best_params[3],
+            "hend": best_params[4],
+            "tpfd": best_params[5],
+        }
+
         self.respond_info(
-            f"Optimization Completed in {duration:.2f} seconds!\n"
+            f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
             f"Best Score        : {result.fun:.2f}\n\n"
             "Parameters\n"
             "----------\n"
-            f"current      : {best_params[0]}\n"
-            f"driver_tbl   : {best_params[1]}\n"
-            f"driver_toff  : {best_params[2]}\n"
-            f"driver_hstrt : {best_params[3]}\n"
-            f"driver_hend  : {best_params[4]}\n"
+            f"current      : {overall_best_params['current']}\n"
+            f"driver_tbl   : {overall_best_params['tbl']}\n"
+            f"driver_toff  : {overall_best_params['toff']}\n"
+            f"driver_hstrt : {overall_best_params['hstrt']}\n"
+            f"driver_hend  : {overall_best_params['hend']}\n"
         )
         if self.driver in ["2240", "5160"]:
-            self.respond_info(f"driver_tpfd : {best_params[5]}")
+            self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+
+        # Second run, lock toff and hend to best values from first run
+        start_time = time.time()
+        self.respond_info(
+            "Starting optimization 2/2 with narrowed bounds..."
+        )
+
+        partial_bounds = [
+            (self.current_min, self.current_max),
+            (self.tbl_min, self.tbl_max),
+            (overall_best_params["toff"], overall_best_params["toff"]),  # lock to the best found
+            (self.hstrt_min, self.hstrt_max),
+            (overall_best_params["hend"], overall_best_params["hend"]),  # lock to the best found
+            (self.tpfd_min, self.tpfd_max),
+        ]
+
+        result = differential_evolution(
+            self.objective_function,
+            partial_bounds,
+            init="sobol",
+            strategy="best1bin",
+            maxiter=10,
+            popsize=5,  # Total evaluations = maxiter * popsize * N_params
+            tol=0.1,
+            mutation=(0.5, 1),
+            recombination=0.7,
+            polish=False,  # Polish uses local minimize, which we avoid for discrete
+        )
+
+        best_params = [round(p) for p in result.x]
+
+        overall_best_params.update({
+            "current": best_params[0],
+            "tbl": best_params[1],
+            # "toff": best_params[2],
+            "hstrt": best_params[3],
+            # "hend": best_params[4],
+            "tpfd": best_params[5],
+        })
+
+        second_run_duration = time.time() - start_time
+        overall_duration = time.time() - overall_start_time
+
+        self.respond_info(
+            f"Optimization Completed in {overall_duration:.2f} seconds!\n"
+            f"Stage 1/2 took {first_run_duration:.2f} seconds!\n"
+            f"Stage 2/2 took {second_run_duration:.2f} seconds!\n"
+            f"Number of samples : {self.number_of_samples}\n"
+            f"Best Score        : {result.fun:.2f}\n\n"
+            "Parameters\n"
+            "----------\n"
+            f"current      : {overall_best_params['current']}\n"
+            f"driver_tbl   : {overall_best_params['tbl']}\n"
+            f"driver_toff  : {overall_best_params['toff']}\n"
+            f"driver_hstrt : {overall_best_params['hstrt']}\n"
+            f"driver_hend  : {overall_best_params['hend']}\n"
+        )
+        if self.driver in ["2240", "5160"]:
+            self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
         return best_params
 
     @gcmd_grabber
