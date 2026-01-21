@@ -538,17 +538,17 @@ def calc_static_magnitude(data_path: str) -> np.ndarray:
     Returns:
         np.ndarray: Mean static acceleration values for x, y, z axes.
     """
-    # start_time = time.time()
-    # max_wait_time = 10  # seconds
-    # prev_size = -1
-    # curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    # while not os.path.exists(data_path) or prev_size != curr_size:
-    #     time.sleep(0.1)  # sleep while the file is getting written
-    #     if os.path.exists(data_path):
-    #         prev_size = curr_size
-    #         curr_size = os.path.getsize(data_path)
-    #     if (time.time() - start_time) > max_wait_time:
-    #         break
+    start_time = time.time()
+    max_wait_time = 10  # seconds
+    prev_size = -1
+    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    while not os.path.exists(data_path) or prev_size != curr_size:
+        time.sleep(0.1)  # sleep while the file is getting written
+        if os.path.exists(data_path):
+            prev_size = curr_size
+            curr_size = os.path.getsize(data_path)
+        if (time.time() - start_time) > max_wait_time:
+            break
 
     with open(data_path) as file:
         data = np.array(
@@ -571,17 +571,17 @@ def calc_magnitude(data_path: str, static_data: np.ndarray) -> float:
     Returns:
         float: Median magnitude of acceleration data.
     """
-    # start_time = time.time()
-    # max_wait_time = 10  # seconds
-    # prev_size = -1
-    # curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    # while not os.path.exists(data_path) or prev_size != curr_size:
-    #     time.sleep(0.1)  # sleep while the file is getting written
-    #     if os.path.exists(data_path):
-    #         prev_size = curr_size
-    #         curr_size = os.path.getsize(data_path)
-    #     if (time.time() - start_time) > max_wait_time:
-    #         break
+    start_time = time.time()
+    max_wait_time = 10  # seconds
+    prev_size = -1
+    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+    while not os.path.exists(data_path) or prev_size != curr_size:
+        time.sleep(0.1)  # sleep while the file is getting written
+        if os.path.exists(data_path):
+            prev_size = curr_size
+            curr_size = os.path.getsize(data_path)
+        if (time.time() - start_time) > max_wait_time:
+            break
 
     with open(data_path) as file:
         data = (
@@ -648,6 +648,7 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
+        self.number_of_samples = 0
 
         # Calculated values
         self.search_method = None
@@ -1300,34 +1301,36 @@ class ChopperTune:
             self.respond_info(
                 f"Final max travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
-                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                f"Start find resonances mode ({search_method}), "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
-                f"{speed_change_step:.2f} step "
-                f"current={current_min} mA "
-                f"TBL={tbl_min} "
-                f"TOFF={toff_min} "
-                f"HSTRT={hstrt_min} "
-                f"HEND={hend_min}"
+                f"Start find resonances mode\n"
+                f"Method     : {search_method}\n"
+                f"speed      : {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
+                f"{speed_change_step:.2f} step\n"
+                f"current    : {current_min} mA\n"
+                f"TBL        : {tbl_min}\n"
+                f"TOFF       : {toff_min}\n"
+                f"HSTRT      : {hstrt_min}\n"
+                f"HEND       : {hend_min}"
             )
         else:
             self.respond_info(
                 f"Final travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
-                f"traveling: {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
             self.respond_info(
-                f"Start of register enumeration mode ({search_method}), "
-                f"speed: {min_speed:.2f}  --> {max_speed:.2f}  mm/s "
-                f"current: {current_min} --> {current_max} mA "
-                f"iterations: {iterations} "
-                f"TBL: {tbl_min} --> {tbl_max} "
-                f"TOFF: {toff_min} --> {toff_max} "
-                f"HSTRT: {hstrt_min} --> {hstrt_max} "
-                f"HEND: {hend_min} --> {hend_max} "
-                f"TPFD: {tpfd_min} --> {tpfd_max}"
+                "Start of register enumeration mode\n"
+                f"Method     : {search_method}\n"
+                f"speed      : {min_speed:.2f}  --> {max_speed:.2f}  mm/s\n"
+                f"current    : {current_min} --> {current_max} mA\n"
+                f"iterations : {iterations}\n"
+                f"TBL        : {tbl_min} --> {tbl_max}\n"
+                f"TOFF       : {toff_min} --> {toff_max}\n"
+                f"HSTRT      : {hstrt_min} --> {hstrt_max}\n"
+                f"HEND       : {hend_min} --> {hend_max}\n"
+                f"TPFD       : {tpfd_min} --> {tpfd_max}"
             )
 
     def home(self) -> None:
@@ -1426,6 +1429,8 @@ class ChopperTune:
             # no need to keep the file in adaptive mode so use it from /tmp
             measurement_data_path = accelerometer_measurement.get_full_path()
         # self.respond_info(f"Accel. data: {measurement_data_path}")
+
+        self.number_of_samples += 1
 
         return measurement_data_path
 
@@ -1540,6 +1545,9 @@ class ChopperTune:
             raise self.printer.command_error(
                 f"WARNING!!! Unsupported search method: {self.search_method}"
             )
+        # Force brute_force in vibration measurement mode
+        if self.measurement_mode == MeasurementMode.Resonances:
+            self.search_method = "brute_force"
 
         self.respond_info(f"Selected {self.search_method} as search method")
 
@@ -1548,8 +1556,8 @@ class ChopperTune:
         # Find the steppers count of the main axis
         self.registers["stepper_count"] = self.get_stepper_count(axis)
 
-        driver, sense_resistor = self.detect_driver(stepper=axis)
-        self.validate_tpfd_values(driver, tpfd_min, tpfd_max)
+        self.driver, self.sense_resistor = self.detect_driver(stepper=axis)
+        self.validate_tpfd_values(self.driver, tpfd_min, tpfd_max)
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
@@ -1702,10 +1710,6 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
 
-        # Force brute_force in vibration measurement mode
-        if self.measurement_mode == MeasurementMode.Resonances:
-            self.search_method = "brute_force"
-
         if self.search_method == "adaptive":
             # Run adaptive optimization
             _best_parameters = self.run_optimization()
@@ -1770,16 +1774,16 @@ class ChopperTune:
                 self.gcode.run_script_from_command(
                     "RUN_SHELL_COMMAND CMD=chop_tune "
                     f"PARAMS='iterations={self.iterations} "
-                    f"driver={driver} "
-                    f"sense_resistor={sense_resistor}'"
+                    f"driver={self.driver} "
+                    f"sense_resistor={self.sense_resistor}'"
                 )
             # output data info
             self.respond_info(
                 "To run parser manually; type - "
                 "RUN_SHELL_COMMAND CMD=chop_tune "
                 f"PARAMS='iterations={self.iterations} "
-                f"driver={driver} "
-                f"sense_resistor={sense_resistor}"
+                f"driver={self.driver} "
+                f"sense_resistor={self.sense_resistor}"
             )
 
         return True
@@ -1932,15 +1936,20 @@ class ChopperTune:
         duration = time.time() - start_time
         self.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
-            f"Best Score: {result.fun:.2f}\n"
-            "Parameters: "
-            f"current= {best_params[0]}, "
-            f"tbl={best_params[1]}, "
-            f"toff={best_params[2]}, "
-            f"hstrt={best_params[3]}, "
-            f"hend={best_params[4]} "
-            f"tpfd={best_params[5]}"
+            f"Number of samples : {self.number_of_samples}\n"
+            f"Best Score        : {result.fun:.2f}\n\n"
+            "Parameters\n"
+            "----------\n"
+            f"current      : {best_params[0]}\n"
+            f"driver_tbl   : {best_params[1]}\n"
+            f"driver_toff  : {best_params[2]}\n"
+            f"driver_hstrt : {best_params[3]}\n"
+            f"driver_hend  : {best_params[4]}\n"
         )
+        if self.driver in ["2240", "5160"]:
+            self.respond_info(
+                f"driver_tpfd : {best_params[5]}"
+            )
         return best_params
 
     @gcmd_grabber
