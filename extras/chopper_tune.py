@@ -120,9 +120,7 @@ class MeasurementMode(IntEnum):
             )
         if isinstance(mode, str):
             mode_name_lut = {m.name.lower(): m.name for m in cls}
-            mode_name_lut.update(
-                {m.value: m.name for m in cls}
-            )
+            mode_name_lut.update({m.value: m.name for m in cls})
             mode_lower_case = mode.lower()
             if mode_lower_case not in mode_name_lut:
                 raise ValueError(
@@ -134,6 +132,59 @@ class MeasurementMode(IntEnum):
             return cls.__members__[mode_name_lut[mode_lower_case]]
 
         return mode
+
+
+class SearchMethod(IntEnum):
+    """Integer enumerator to specify the current search method."""
+
+    BruteForce = 0
+    Adaptive = 1
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation of this SearchMethod.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+    @classmethod
+    def to_method(cls, method: int | str | SearchMethod) -> SearchMethod:
+        """Convert the given method value to a SearchMethod enum.
+
+        Args:
+            method (int | str | SearchMethod]): The value to convert to a
+                SearchMethod.
+
+        Raises:
+            TypeError: Input value type is invalid.
+            ValueError: Input value is invalid.
+
+        Returns:
+            SearchMethod: The enum.
+        """
+        if not isinstance(method, (int, str, SearchMethod)):
+            raise TypeError(
+                "method should be a SearchMethod enum value or one of "
+                f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                f"not {method.__class__.__name__}: '{method}'"
+            )
+        if isinstance(method, str):
+            method_name_lut = {m.name.lower(): m.name for m in cls}
+            method_name_lut.update({m.value: m.name for m in cls})
+            method_lower_case = method.lower()
+            if method_lower_case not in method_name_lut:
+                raise ValueError(
+                    "method should be a SearchMethod enum value or one of "
+                    f"{[m.name for m in cls] + [m.value for m in cls]}, "
+                    f"not '{method}'"
+                )
+
+            return cls.__members__[method_name_lut[method_lower_case]]
+
+        return method
 
 
 class AccelerometerMeasure:
@@ -250,9 +301,7 @@ class AccelerometerMeasure:
         max_wait_time = 10  # seconds
         prev_size = -1
         curr_size = (
-            0
-            if not os.path.exists(self.full_path)
-            else os.path.getsize(self.full_path)
+            0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
         )
         while not os.path.exists(self.full_path) or prev_size != curr_size:
             time.sleep(0.1)
@@ -951,13 +1000,15 @@ class ChopperTune:
                         self.gcode.run_script_from_command(
                             f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                         )
-                elif not (field == "tpfd" and value == -1):
-                    if self.registers[field.lower()] != value:
-                        self.gcode.run_script_from_command(
-                            "SET_TMC_FIELD "
-                            f"STEPPER={stepper}{stepper_index} "
-                            f"FIELD={field} VALUE={value}"
-                        )
+                elif (
+                    not (field == "tpfd" and value == -1)
+                    and self.registers[field.lower()] != value
+                ):
+                    self.gcode.run_script_from_command(
+                        "SET_TMC_FIELD "
+                        f"STEPPER={stepper}{stepper_index} "
+                        f"FIELD={field} VALUE={value}"
+                    )
         # store the last applied value
         self.registers[field.lower()] = value
 
@@ -1365,7 +1416,7 @@ class ChopperTune:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
         else:
-            # no need to keep the file in adaptive mode so use it from /tmp
+            # no need to keep the file in adaptive mode so use it from /tmp
             measurement_data_path = accelerometer_measurement.get_full_path()
         self.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
@@ -1426,7 +1477,7 @@ class ChopperTune:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
         else:
-            # no need to keep the file in adaptive mode so use it from /tmp
+            # no need to keep the file in adaptive mode so use it from /tmp
             measurement_data_path = accelerometer_measurement.get_full_path()
         # self.respond_info(f"Accel. data: {measurement_data_path}")
 
@@ -1531,6 +1582,9 @@ class ChopperTune:
             travel_distance (int | str): The travel distance, or can be set to
                 "default" to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
+            direction (int): The movement direction, can be 1 or -1.
+                1 means starting from the minimum position to maximum position,
+                -1 means starting from the maximum position to minimum position.
             accel_chip (str): The name of the acceleration chip.
             run_plotter (bool): If set to True, the magnitude graphs will be
                 generated after the vibration measurements are completed.
@@ -1673,7 +1727,7 @@ class ChopperTune:
         # Create the coordinate generator
         coord_generator = CoordGenerator(
             direction=self.initial_direction,
-            start_coord=self.initial_position
+            start_coord=self.initial_position,
         )
 
         # calculated vars
@@ -1764,7 +1818,9 @@ class ChopperTune:
                 )
 
         self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(f"G0 {axis}{a_axis_mid} F{self.travel_speed}")
+        self.gcode.run_script_from_command(
+            f"G0 {axis}{a_axis_mid} F{self.travel_speed}"
+        )
         self.toolhead.wait_moves()
         if self.search_method != "adaptive":
             if run_plotter:
@@ -1870,7 +1926,7 @@ class ChopperTune:
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
         if self.search_method == "adaptive":
-            os.remove(measurement_data_path)  # no need to keep the file
+            os.remove(measurement_data_path)  # no need to keep the file
 
         self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f}")
         return measured_vibrations
@@ -1947,9 +2003,7 @@ class ChopperTune:
             f"driver_hend  : {best_params[4]}\n"
         )
         if self.driver in ["2240", "5160"]:
-            self.respond_info(
-                f"driver_tpfd : {best_params[5]}"
-            )
+            self.respond_info(f"driver_tpfd : {best_params[5]}")
         return best_params
 
     @gcmd_grabber
