@@ -171,11 +171,13 @@ class AccelerometerMeasure:
         self,
         printer: Printer,
         gcode: GCodeDispatch,
+        reactor: PollReactor,
         accel_chip: str,
         name: str,
     ) -> None:
         self.printer = printer
         self.gcode = gcode
+        self.reactor = reactor
         self.accel_chip = accel_chip
         self.name = name
 
@@ -248,7 +250,7 @@ class AccelerometerMeasure:
                 else os.path.getsize(self.full_path)
             )
             while not os.path.exists(self.full_path) or prev_size != curr_size:
-                time.sleep(0.1)
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
                 if os.path.exists(self.full_path):
                     prev_size = curr_size
                     curr_size = os.path.getsize(self.full_path)
@@ -281,7 +283,7 @@ class AccelerometerMeasure:
             0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
         )
         while not os.path.exists(self.full_path) or prev_size != curr_size:
-            time.sleep(0.1)
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
             if os.path.exists(self.full_path):
                 prev_size = curr_size
                 curr_size = os.path.getsize(self.full_path)
@@ -554,80 +556,6 @@ class CoordGenerator:
         return self.current_coord
 
 
-def calc_static_magnitude(data_path: str) -> np.ndarray:
-    """Calculate static acceleration data from CSV file.
-
-    Args:
-        data_path (str): The path to the CSV file containing static
-            acceleration data.
-
-    Returns:
-        np.ndarray: Mean static acceleration values for x, y, z axes.
-    """
-    start_time = time.time()
-    max_wait_time = 10  # seconds
-    prev_size = -1
-    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    while not os.path.exists(data_path) or prev_size != curr_size:
-        time.sleep(0.1)  # sleep while the file is getting written
-        if os.path.exists(data_path):
-            prev_size = curr_size
-            curr_size = os.path.getsize(data_path)
-        if (time.time() - start_time) > max_wait_time:
-            break
-
-    with open(data_path) as file:
-        data = np.array(
-            [
-                [float(row["accel_x"]), float(row["accel_y"]), float(row["accel_z"])]
-                for row in csv.DictReader(file)
-            ]
-        )
-    return np.mean(data, axis=0)
-
-
-def calc_magnitude(data_path: str, static_data: np.ndarray) -> float:
-    """Calculate median magnitude of acceleration data from CSV file.
-
-    Args:
-        data_path (str): The path to the CSV file containing acceleration data.
-        static_data (np.ndarray): Mean static acceleration values for x, y, z
-            axes.
-
-    Returns:
-        float: Median magnitude of acceleration data.
-    """
-    start_time = time.time()
-    max_wait_time = 10  # seconds
-    prev_size = -1
-    curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-    while not os.path.exists(data_path) or prev_size != curr_size:
-        time.sleep(0.1)  # sleep while the file is getting written
-        if os.path.exists(data_path):
-            prev_size = curr_size
-            curr_size = os.path.getsize(data_path)
-        if (time.time() - start_time) > max_wait_time:
-            break
-
-    with open(data_path) as file:
-        data = (
-            np.array(
-                [
-                    [
-                        float(row["accel_x"]),
-                        float(row["accel_y"]),
-                        float(row["accel_z"]),
-                    ]
-                    for row in csv.DictReader(file)
-                ]
-            )
-            - static_data
-        )
-    trim_size = len(data) // CUTOFF_RANGE
-    data = data[trim_size:-trim_size]
-    return np.median(np.linalg.norm(data, axis=1))
-
-
 class ChopperTune:
     """The main class to handle the chopper tune functionality.
 
@@ -673,9 +601,9 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
-        self.total_number_of_samples = -1  # the expected number of samples
-        self.number_of_samples = 0  # current number of samples taken
-        self.number_of_real_samples = 0 # current number of real samples taken
+        self.total_number_of_samples = -1  # the expected number of samples
+        self.number_of_samples = 0  # current number of samples taken
+        self.number_of_real_samples = 0  # current number of real samples taken
         self.best_result = 999_999_999  # store the best result
 
         # Calculated values
@@ -798,7 +726,9 @@ class ChopperTune:
 
         return None, None
 
-    def get_axes_and_steppers(self, axis: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def get_axes_and_steppers(
+        self, axis: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Get main and secondary axis / stepper.
 
         Args:
@@ -1375,6 +1305,7 @@ class ChopperTune:
         with AccelerometerMeasure(
             printer=self.printer,
             gcode=self.gcode,
+            reactor=self.reactor,
             accel_chip=accel_chip,
             name="stand_still",
         ) as accelerometer_measurement:
@@ -1391,7 +1322,9 @@ class ChopperTune:
         self.gcode.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
             duration = time.time() - start_time
-            self.gcode.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
+            self.gcode.respond_info(
+                f"AccelerometerMeasure took {duration:0.1f} seconds"
+            )
         return measurement_data_path
 
     def measure_vibrations(
@@ -1418,6 +1351,7 @@ class ChopperTune:
         with AccelerometerMeasure(
             printer=self.printer,
             gcode=self.gcode,
+            reactor=self.reactor,
             accel_chip=accel_chip,
             name=name,
         ) as accelerometer_measurement:
@@ -1493,6 +1427,79 @@ class ChopperTune:
         elif axes[0] == "z":
             initial_direction = Coord((0, 0, 1))
         return initial_direction
+
+    def wait_for_file_write(self, data_path: str) -> None:
+        """Wait for file write to complete.
+
+        Args:
+            data_path (str): The path to the CSV file.
+        """
+        start_time = time.time()
+        max_wait_time = 10  # seconds
+        prev_size = -1
+        curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
+        while not os.path.exists(data_path) or prev_size != curr_size:
+            # sleep while the file is getting written
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            if os.path.exists(data_path):
+                prev_size = curr_size
+                curr_size = os.path.getsize(data_path)
+            if (time.time() - start_time) > max_wait_time:
+                break
+
+    def calc_static_magnitude(self, data_path: str) -> np.ndarray:
+        """Calculate static acceleration data from CSV file.
+
+        Args:
+            data_path (str): The path to the CSV file containing static
+                acceleration data.
+
+        Returns:
+            np.ndarray: Mean static acceleration values for x, y, z axes.
+        """
+        self.wait_for_file_write(data_path)
+        with open(data_path) as file:
+            data = np.array(
+                [
+                    [
+                        float(row["accel_x"]),
+                        float(row["accel_y"]),
+                        float(row["accel_z"]),
+                    ]
+                    for row in csv.DictReader(file)
+                ]
+            )
+        return np.mean(data, axis=0)
+
+    def calc_magnitude(self, data_path: str, static_data: np.ndarray) -> float:
+        """Calculate median magnitude of acceleration data from CSV file.
+
+        Args:
+            data_path (str): The path to the CSV file containing acceleration data.
+            static_data (np.ndarray): Mean static acceleration values for x, y, z
+                axes.
+
+        Returns:
+            float: Median magnitude of acceleration data.
+        """
+        self.wait_for_file_write(data_path)
+        with open(data_path) as file:
+            data = (
+                np.array(
+                    [
+                        [
+                            float(row["accel_x"]),
+                            float(row["accel_y"]),
+                            float(row["accel_z"]),
+                        ]
+                        for row in csv.DictReader(file)
+                    ]
+                )
+                - static_data
+            )
+        trim_size = len(data) // CUTOFF_RANGE
+        data = data[trim_size:-trim_size]
+        return np.median(np.linalg.norm(data, axis=1))
 
     def chopper_tune(
         self,
@@ -1690,7 +1697,7 @@ class ChopperTune:
 
         # Measure accelerometer noise
         static_data_path = self.measure_accelerometer_noise(accel_chip)
-        static_noise_magnitude = tuple(calc_static_magnitude(static_data_path))
+        static_noise_magnitude = tuple(self.calc_static_magnitude(static_data_path))
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
@@ -1745,27 +1752,23 @@ class ChopperTune:
             ):
                 speed = speed / 100
                 for iteration in range(self.iterations):
-                    measured_vibrations = (
-                        self.execute_vibration_measurement(
-                            speed,
-                            max_speed,
-                            travel_distance,
-                            coord_generator,
-                            accel_chip,
-                            steppers,
-                            static_noise_magnitude,
-                            iteration,
-                            current_min,
-                            tbl_min,
-                            toff_min,
-                            hstrt_min,
-                            hend_min,
-                            tpfd_min,
-                        )
+                    measured_vibrations = self.execute_vibration_measurement(
+                        speed,
+                        max_speed,
+                        travel_distance,
+                        coord_generator,
+                        accel_chip,
+                        steppers,
+                        static_noise_magnitude,
+                        iteration,
+                        current_min,
+                        tbl_min,
+                        toff_min,
+                        hstrt_min,
+                        hend_min,
+                        tpfd_min,
                     )
-                    speed_vs_vibrations.append(
-                        (speed, measured_vibrations)
-                    )
+                    speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
                 max_vibrations_and_speed = sorted(
@@ -1887,13 +1890,15 @@ class ChopperTune:
         )
 
         # measured_vibrations should be used to optimize the inputs with scipy.optimize
-        measured_vibrations = calc_magnitude(
+        measured_vibrations = self.calc_magnitude(
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
         if self.search_method == SearchMethod.Adaptive:
             os.remove(measurement_data_path)  # no need to keep the file
 
-        self.gcode.respond_info(f"Measured vibrations: {measured_vibrations:0.2f} mm/s²")
+        self.gcode.respond_info(
+            f"Measured vibrations: {measured_vibrations:0.2f} mm/s²"
+        )
         return measured_vibrations
 
     def progress_report(self) -> None:
@@ -1909,7 +1914,7 @@ class ChopperTune:
                 f"Real samples: {self.number_of_real_samples}"
             )
         else:
-            # just report sample statistics
+            # just report sample statistics
             self.gcode.respond_info(
                 f"Samples taken: {self.number_of_samples} - "
                 f"Real samples: {self.number_of_real_samples}"
@@ -1931,9 +1936,9 @@ class ChopperTune:
             self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
             )
-            self.number_of_samples += 1  # consider this as a sample
+            self.number_of_samples += 1  # consider this as a sample
             self.progress_report()
-            return float('inf')
+            return float("inf")
 
         total_vibrations = 0
         for iteration in range(self.iterations):
@@ -1986,16 +1991,20 @@ class ChopperTune:
             "tpfd": -1,
         }
 
-        # set initial values
-        self.apply_registers(steppers=self.steppers, field="curr", value=self.current_min)
+        # set initial values
+        self.apply_registers(
+            steppers=self.steppers, field="curr", value=self.current_min
+        )
         self.apply_registers(steppers=self.steppers, field="tbl", value=self.tbl_min)
         self.apply_registers(steppers=self.steppers, field="toff", value=self.toff_min)
         self.apply_registers(steppers=self.steppers, field="hend", value=self.hend_min)
-        self.apply_registers(steppers=self.steppers, field="hstrt", value=self.hstrt_min)
+        self.apply_registers(
+            steppers=self.steppers, field="hstrt", value=self.hstrt_min
+        )
         self.apply_registers(steppers=self.steppers, field="tpfd", value=self.tpfd_min)
 
         if self.search_method == SearchMethod.BruteForce:
-            # Brute-force search
+            # Brute-force search
             bounds = [
                 slice(self.current_min, self.current_max + 1, self.current_change_step),
                 slice(self.tbl_min, self.tbl_max + 1, 1),
@@ -2005,10 +2014,10 @@ class ChopperTune:
                 slice(self.tpfd_min, self.tpfd_max + 1, 1),
             ]
 
-            # update total expected samples
+            # update total expected samples
             total_current_steps = (
-                (self.current_max - self.current_min) // self.current_change_step + 1
-            )
+                self.current_max - self.current_min
+            ) // self.current_change_step + 1
             total_tbl_steps = self.tbl_max - self.tbl_min + 1
             total_toff_steps = self.toff_max - self.toff_min + 1
             total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
@@ -2032,7 +2041,7 @@ class ChopperTune:
 
             best_params = [round(p) for p in result]
         else:
-            # Adaptive search
+            # Adaptive search
             # 'strategy' and 'popsize' are tuned to reduce total measurements
             # 'tol' can be higher since our parameters are discrete
 
@@ -2064,15 +2073,17 @@ class ChopperTune:
             duration = time.time() - start_time
             first_run_duration = duration
 
-            # update overall best params with first run results
-            overall_best_params.update({
-                "current": best_params[0],
-                "tbl": best_params[1],
-                "toff": best_params[2],
-                "hstrt": best_params[3],
-                "hend": best_params[4],
-                "tpfd": best_params[5],
-            })
+            # update overall best params with first run results
+            overall_best_params.update(
+                {
+                    "current": best_params[0],
+                    "tbl": best_params[1],
+                    "toff": best_params[2],
+                    "hstrt": best_params[3],
+                    "hend": best_params[4],
+                    "tpfd": best_params[5],
+                }
+            )
 
             self.gcode.respond_info(
                 f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
@@ -2089,18 +2100,22 @@ class ChopperTune:
             if self.driver in ["2240", "5160"]:
                 self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
 
-            # Second run, lock toff and hend to best values from first run
+            # Second run, lock toff and hend to best values from first run
             start_time = time.time()
-            self.gcode.respond_info(
-                "Starting optimization 2/2 with narrowed bounds..."
-            )
+            self.gcode.respond_info("Starting optimization 2/2 with narrowed bounds...")
 
             partial_bounds = [
                 (self.current_min, self.current_max),
                 (self.tbl_min, self.tbl_max),
-                (overall_best_params["toff"], overall_best_params["toff"]),  # lock to the best found
+                (
+                    overall_best_params["toff"],
+                    overall_best_params["toff"],
+                ),  # lock to the best found
                 (self.hstrt_min, self.hstrt_max),
-                (overall_best_params["hend"], overall_best_params["hend"]),  # lock to the best found
+                (
+                    overall_best_params["hend"],
+                    overall_best_params["hend"],
+                ),  # lock to the best found
                 (self.tpfd_min, self.tpfd_max),
             ]
 
@@ -2120,15 +2135,17 @@ class ChopperTune:
             second_run_duration = time.time() - start_time
             best_params = [round(p) for p in result.x]
 
-        # update overall best params with final results
-        overall_best_params.update({
-            "current": best_params[0],
-            "tbl": best_params[1],
-            "toff": best_params[2],
-            "hstrt": best_params[3],
-            "hend": best_params[4],
-            "tpfd": best_params[5],
-        })
+        # update overall best params with final results
+        overall_best_params.update(
+            {
+                "current": best_params[0],
+                "tbl": best_params[1],
+                "toff": best_params[2],
+                "hstrt": best_params[3],
+                "hend": best_params[4],
+                "tpfd": best_params[5],
+            }
+        )
 
         overall_duration = time.time() - overall_start_time
 
