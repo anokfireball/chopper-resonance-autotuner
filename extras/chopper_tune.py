@@ -58,29 +58,6 @@ FCLK = 12  # MHz
 CUTOFF_RANGE = 5
 
 
-def gcmd_grabber(f: Callable) -> Callable:
-    """Decorator to grab the gcmd arg temporarily from command methods.
-
-    This allows non-command methods to use the respond_info and respond_debug
-    methods.
-
-    Args:
-        f (Callable): The function to wrap.
-
-    Returns:
-        Callable: The wrapped function.
-    """
-
-    @wraps(f)
-    def wrapped_f(self: ChopperTune, gcmd: GCodeCommand, *args, **kwargs) -> None:
-        self._gcmd = gcmd
-        result = f(self, gcmd, *args, **kwargs)
-        self._gcmd = None
-        return result
-
-    return wrapped_f
-
-
 class MeasurementMode(IntEnum):
     """Integer enumerator to specify the current measurement mode."""
 
@@ -677,7 +654,6 @@ class ChopperTune:
         }
 
         # state variables
-        self._gcmd = None
         self._toolhead = None
 
         # config values
@@ -738,17 +714,6 @@ class ChopperTune:
         """Register GCode commands."""
         self.gcode.register_command("CHOPPER_TUNE", self.cmd_chopper_tune)
         self.gcode.register_command("CHOPPER_TUNE_DEBUG", self.cmd_chopper_tune_debug)
-
-    def respond_info(self, msg: str) -> None:
-        """Respond info through the current GCodeCommand instance.
-
-        Args:
-            msg (str): The info message.
-        """
-        if self._gcmd is None:
-            self.gcode.respond_info(msg)
-        else:
-            self._gcmd.respond_info(msg)
 
     @property
     def settings(self) -> dict:
@@ -824,7 +789,7 @@ class ChopperTune:
         for driver in drivers:
             if "run_current" not in self.settings.get(f"tmc{driver} {stepper}", {}):
                 continue
-            self.respond_info(f"Selected tmc{driver} for {stepper}")
+            self.gcode.respond_info(f"Selected tmc{driver} for {stepper}")
             if driver != "2240":
                 resistor = self.settings[f"tmc{driver} {stepper}"]["sense_resistor"]
             else:
@@ -994,7 +959,7 @@ class ChopperTune:
             # don't add index for the first stepper
             stepper_index = str(stepper_index) if stepper_index > 0 else ""
             if self.debug:
-                self.respond_info(
+                self.gcode.respond_info(
                     f"Setting {field.lower()} "
                     f"from {self.registers[field]} to {value} "
                     f"on {stepper}{stepper_index}"
@@ -1046,7 +1011,7 @@ class ChopperTune:
                 # Use Default accelerometer
                 accel_chip = DEFAULT_ACCEL_CHIP
 
-        self.respond_info(f"Selected {accel_chip} for accelerometer")
+        self.gcode.respond_info(f"Selected {accel_chip} for accelerometer")
         return accel_chip
 
     def get_current_range(
@@ -1074,7 +1039,7 @@ class ChopperTune:
         if current_min == "default":
             current_min = run_current
             if self.debug:
-                self.respond_info(
+                self.gcode.respond_info(
                     f"Set default run_current: {current_min} mA to run_current_min"
                 )
         else:
@@ -1083,7 +1048,7 @@ class ChopperTune:
         if current_max == "default":
             current_max = run_current
             if self.debug:
-                self.respond_info(
+                self.gcode.respond_info(
                     f"Set default run_current: {current_max} mA to run_current_max"
                 )
         else:
@@ -1262,10 +1227,10 @@ class ChopperTune:
         accel_decel_distance = max_speed**2 / acceleration
         auto_travel_distance = accel_decel_distance + (max_speed * measure_time)
         if self.debug:
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Acceleration & deceleration zone = {accel_decel_distance} mm"
             )
-            self.respond_info(
+            self.gcode.respond_info(
                 "Auto calculated min required travel distance = "
                 f"{auto_travel_distance} mm"
             )
@@ -1291,7 +1256,7 @@ class ChopperTune:
                         "or lower speed"
                     )
                 if travel_distance > auto_travel_distance:
-                    self.respond_info(
+                    self.gcode.respond_info(
                         f"WARNING!!! Travel distance on axis ({axes[0]}) "
                         "is longer than kinematics allows, lowering..."
                     )
@@ -1354,12 +1319,12 @@ class ChopperTune:
         """
         if self.measurement_mode == MeasurementMode.Resonances:
             # Resonance measurement mode uses the minimum values for registers.
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Final max travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
                 f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Start find resonances mode\n"
                 f"Method     : {search_method}\n"
                 f"speed      : {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
@@ -1371,12 +1336,12 @@ class ChopperTune:
                 f"HEND       : {hend_min}"
             )
         else:
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Final travel distance = {travel_distance:.2f} mm, "
                 f"position min = {a_axis_min:.2f}, "
                 f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
             )
-            self.respond_info(
+            self.gcode.respond_info(
                 "Start of register enumeration mode\n"
                 f"Method     : {search_method}\n"
                 f"speed      : {min_speed:.2f}  --> {max_speed:.2f}  mm/s\n"
@@ -1423,10 +1388,10 @@ class ChopperTune:
         else:
             # no need to keep the file in adaptive mode so use it from /tmp
             measurement_data_path = accelerometer_measurement.get_full_path()
-        self.respond_info(f"Noise Data: {measurement_data_path}")
+        self.gcode.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
             duration = time.time() - start_time
-            self.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
+            self.gcode.respond_info(f"AccelerometerMeasure took {duration:0.1f} seconds")
         return measurement_data_path
 
     def measure_vibrations(
@@ -1606,7 +1571,7 @@ class ChopperTune:
         if self.measurement_mode == MeasurementMode.Resonances:
             self.search_method = SearchMethod.BruteForce
 
-        self.respond_info(f"Selected {self.search_method} as search method")
+        self.gcode.respond_info(f"Selected {self.search_method} as search method")
 
         measure_time = self.measure_time / 1000
         self.reset_registers()
@@ -1806,7 +1771,7 @@ class ChopperTune:
                 max_vibrations_and_speed = sorted(
                     speed_vs_vibrations, key=lambda x: x[1]
                 )[-1]
-                self.respond_info(
+                self.gcode.respond_info(
                     "Max vibrations seems to be at "
                     f"{max_vibrations_and_speed[0]:0.2f} mm/s"
                 )
@@ -1818,8 +1783,8 @@ class ChopperTune:
         self.toolhead.wait_moves()
         if self.search_method != SearchMethod.Adaptive:
             if run_plotter:
-                self.respond_info("Magnitude graphs generation...")
-                self.respond_info("This may take a while, please wait")
+                self.gcode.respond_info("Magnitude graphs generation...")
+                self.gcode.respond_info("This may take a while, please wait")
                 # export data to processing
                 self.gcode.run_script_from_command(
                     "RUN_SHELL_COMMAND CMD=chop_tune "
@@ -1828,7 +1793,7 @@ class ChopperTune:
                     f"sense_resistor={self.sense_resistor}'"
                 )
             # output data info
-            self.respond_info(
+            self.gcode.respond_info(
                 "To run parser manually; type - "
                 "RUN_SHELL_COMMAND CMD=chop_tune "
                 f"PARAMS='iterations={self.iterations} "
@@ -1908,7 +1873,7 @@ class ChopperTune:
             # when finding resonances,
             # keep the travel duration constant
             real_travel_distance = travel_distance * (speed / max_speed)
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
             )
         self.toolhead.wait_moves()
@@ -1928,7 +1893,7 @@ class ChopperTune:
         if self.search_method == SearchMethod.Adaptive:
             os.remove(measurement_data_path)  # no need to keep the file
 
-        self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f} mm/s²")
+        self.gcode.respond_info(f"Measured vibrations: {measured_vibrations:0.2f} mm/s²")
         return measured_vibrations
 
     def progress_report(self) -> None:
@@ -1937,7 +1902,7 @@ class ChopperTune:
             percent_complete = (
                 self.number_of_samples / self.total_expected_samples
             ) * 100
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Progress: {self.number_of_samples}/"
                 f"{self.total_expected_samples} "
                 f"({percent_complete:0.2f}%) - "
@@ -1945,7 +1910,7 @@ class ChopperTune:
             )
         else:
             # just report sample statistics
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Samples taken: {self.number_of_samples} - "
                 f"Real samples: {self.number_of_real_samples}"
             )
@@ -1963,7 +1928,7 @@ class ChopperTune:
 
         # penalize hstart + hend > hstrt_hend_max
         if hstrt + hend > self.hstrt_hend_max:
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
             )
             self.number_of_samples += 1  # consider this as a sample
@@ -1992,7 +1957,7 @@ class ChopperTune:
             self.progress_report()
         total_vibrations /= self.iterations
         if self.iterations > 1:
-            self.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
+            self.gcode.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
         # store best result for the last report
         self.best_result = min(self.best_result, total_vibrations)
         return total_vibrations
@@ -2006,8 +1971,7 @@ class ChopperTune:
         Returns:
             dict: The best parameters found.
         """
-        # TODO: Use a for-loop to do multi-step optimization with narrowed bounds
-        self.respond_info("Starting optimization 1/2...")
+        self.gcode.respond_info("Starting optimization 1/2...")
         start_time = time.time()
         overall_start_time = start_time
         first_run_duration = 0
@@ -2110,7 +2074,7 @@ class ChopperTune:
                 "tpfd": best_params[5],
             })
 
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
                 f"Number of samples : {self.number_of_samples}\n"
                 f"Best Score        : {self.best_result:.2f}\n\n"
@@ -2123,11 +2087,11 @@ class ChopperTune:
                 f"driver_hend  : {overall_best_params['hend']}\n"
             )
             if self.driver in ["2240", "5160"]:
-                self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+                self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
 
             # Second run, lock toff and hend to best values from first run
             start_time = time.time()
-            self.respond_info(
+            self.gcode.respond_info(
                 "Starting optimization 2/2 with narrowed bounds..."
             )
 
@@ -2168,15 +2132,15 @@ class ChopperTune:
 
         overall_duration = time.time() - overall_start_time
 
-        self.respond_info(
+        self.gcode.respond_info(
             f"Optimization Completed in {overall_duration:.2f} seconds!\n"
         )
         if self.search_method == SearchMethod.Adaptive:
-            self.respond_info(
+            self.gcode.respond_info(
                 f"Stage 1/2 took {first_run_duration:.2f} seconds!\n"
                 f"Stage 2/2 took {second_run_duration:.2f} seconds!\n"
             )
-        self.respond_info(
+        self.gcode.respond_info(
             f"Number of samples : {self.number_of_samples}\n"
             f"Best Score        : {self.best_result:.2f}\n\n"
             "Parameters\n"
@@ -2188,7 +2152,7 @@ class ChopperTune:
             f"driver_hend  : {overall_best_params['hend']}\n"
         )
         if self.driver in ["2240", "5160"]:
-            self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+            self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
 
         # clear the cache for the next runs
         self.execute_vibration_measurement.cache_clear()
@@ -2217,11 +2181,10 @@ class ChopperTune:
                 value,
             )
 
-        self.respond_info(
+        self.gcode.respond_info(
             "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
         )
 
-    @gcmd_grabber
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
         """Tune stepper values.
 
@@ -2306,9 +2269,8 @@ class ChopperTune:
                 run_plotter=run_plotter,
             )
         except Exception:
-            self.respond_info(traceback.format_exc())
+            self.gcode.respond_info(traceback.format_exc())
 
-    @gcmd_grabber
     def cmd_chopper_tune_debug(self, gcmd: GCodeCommand) -> bool:
         """Development debug tool.
 
@@ -2319,12 +2281,12 @@ class ChopperTune:
             bool: True if command completed successfully, False otherwise.
         """
         try:
-            # self.respond_info(f"required_rpm: {self.required_rpm}")
-            self.respond_info(f"x stepper count: {self.get_stepper_count('x')}")
-            self.respond_info(f"y stepper count: {self.get_stepper_count('y')}")
-            self.respond_info(f"z stepper count: {self.get_stepper_count('z')}")
+            # self.gcode.respond_info(f"required_rpm: {self.required_rpm}")
+            self.gcode.respond_info(f"x stepper count: {self.get_stepper_count('x')}")
+            self.gcode.respond_info(f"y stepper count: {self.get_stepper_count('y')}")
+            self.gcode.respond_info(f"z stepper count: {self.get_stepper_count('z')}")
         except Exception as e:
-            self.respond_info(traceback.format_exc(e))
+            self.gcode.respond_info(traceback.format_exc(e))
 
 
 def load_config(config: ConfigWrapper) -> ChopperTune:
