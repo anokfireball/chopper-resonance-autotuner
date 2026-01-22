@@ -1763,11 +1763,10 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
         best_parameters = None
-        if self.search_method == SearchMethod.Adaptive:
-            # Run adaptive optimization
-            best_parameters = self.run_optimization()
+
+        if self.measurement_mode == MeasurementMode.Vibrations:
+            best_parameters = self.search_best_parameters()
         else:
-            # Brute-force search
             speed_vs_vibrations = []
             for current in range(
                 current_min, current_max + 1, self.current_change_step
@@ -1977,8 +1976,8 @@ class ChopperTune:
         self.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
         return total_vibrations
 
-    def run_optimization(self) -> list[int]:
-        """Run the optimization process.
+    def search_best_parameters(self) -> list[int]:
+        """Run the parameter search process.
 
         Returns:
             dict: The best parameters found.
