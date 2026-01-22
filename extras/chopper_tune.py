@@ -601,7 +601,7 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
-        self.total_number_of_samples = -1  # the expected number of samples
+        self.total_expected_samples = -1 # the expected number of samples
         self.number_of_samples = 0  # current number of samples taken
         self.number_of_real_samples = 0  # current number of real samples taken
         self.best_result = 999_999_999  # store the best result
@@ -1570,8 +1570,13 @@ class ChopperTune:
             None | dict: The best parameters found, or None if tuning was not
                 done using the adaptive method.
         """
-        # reset best result
+        # reset previous run data
+        self.total_expected_samples = -1
+        self.number_of_samples = 0
+        self.number_of_real_samples = 0
         self.best_result = 999_999_999
+        self.execute_vibration_measurement.cache_clear()
+
         self.search_method = search_method
 
         # Force brute_force in vibration measurement mode
@@ -1911,13 +1916,13 @@ class ChopperTune:
                 f"Progress: {self.number_of_samples}/"
                 f"{self.total_expected_samples} "
                 f"({percent_complete:0.2f}%) - "
-                f"Real samples: {self.number_of_real_samples}"
+                f"(reused: {self.number_of_samples - self.number_of_real_samples})"
             )
         else:
             # just report sample statistics
             self.gcode.respond_info(
-                f"Samples taken: {self.number_of_samples} - "
-                f"Real samples: {self.number_of_real_samples}"
+                f"Samples taken: {self.number_of_samples} "
+                f"(reused: {self.number_of_samples - self.number_of_real_samples})"
             )
 
     def objective_function(self, params: list[float]) -> float:
@@ -1978,9 +1983,6 @@ class ChopperTune:
         """
         self.gcode.respond_info("Starting optimization 1/2...")
         start_time = time.time()
-        overall_start_time = start_time
-        first_run_duration = 0
-        second_run_duration = 0
 
         overall_best_params = {
             "current": -1,
@@ -2045,77 +2047,12 @@ class ChopperTune:
             # 'strategy' and 'popsize' are tuned to reduce total measurements
             # 'tol' can be higher since our parameters are discrete
 
-            # Do a two-step optimization to speed up the process
-            # First run, lock all params except toff and hend
-            partial_bounds = [
-                (self.current_min, self.current_min),  # lock current
-                (self.tbl_min, self.tbl_min),  # lock current
-                (self.toff_min, self.toff_max),
-                (self.hstrt_min, self.hstrt_min),  # lock current
-                (self.hend_min, self.hend_max),
-                (self.tpfd_min, self.tpfd_min),  # lock current
-            ]
-
-            result = differential_evolution(
-                self.objective_function,
-                partial_bounds,
-                init="sobol",
-                strategy="best1bin",
-                maxiter=10,
-                popsize=5,  # Total evaluations = maxiter * popsize * N_params
-                tol=0.1,
-                mutation=(0.5, 1),
-                recombination=0.7,
-                polish=False,  # Polish uses local minimize, which we avoid for discrete
-            )
-
-            best_params = [round(p) for p in result.x]
-            duration = time.time() - start_time
-            first_run_duration = duration
-
-            # update overall best params with first run results
-            overall_best_params.update(
-                {
-                    "current": best_params[0],
-                    "tbl": best_params[1],
-                    "toff": best_params[2],
-                    "hstrt": best_params[3],
-                    "hend": best_params[4],
-                    "tpfd": best_params[5],
-                }
-            )
-
-            self.gcode.respond_info(
-                f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
-                f"Number of samples : {self.number_of_samples}\n"
-                f"Best Score        : {self.best_result:.2f}\n\n"
-                "Parameters\n"
-                "----------\n"
-                f"current      : {overall_best_params['current']}\n"
-                f"driver_tbl   : {overall_best_params['tbl']}\n"
-                f"driver_toff  : {overall_best_params['toff']}\n"
-                f"driver_hstrt : {overall_best_params['hstrt']}\n"
-                f"driver_hend  : {overall_best_params['hend']}\n"
-            )
-            if self.driver in ["2240", "5160"]:
-                self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
-
-            # Second run, lock toff and hend to best values from first run
-            start_time = time.time()
-            self.gcode.respond_info("Starting optimization 2/2 with narrowed bounds...")
-
             partial_bounds = [
                 (self.current_min, self.current_max),
                 (self.tbl_min, self.tbl_max),
-                (
-                    overall_best_params["toff"],
-                    overall_best_params["toff"],
-                ),  # lock to the best found
+                (self.toff_min, self.toff_max),
                 (self.hstrt_min, self.hstrt_max),
-                (
-                    overall_best_params["hend"],
-                    overall_best_params["hend"],
-                ),  # lock to the best found
+                (self.hend_min, self.hend_max),
                 (self.tpfd_min, self.tpfd_max),
             ]
 
@@ -2132,7 +2069,6 @@ class ChopperTune:
                 polish=False,  # Polish uses local minimize, which we avoid for discrete
             )
 
-            second_run_duration = time.time() - start_time
             best_params = [round(p) for p in result.x]
 
         # update overall best params with final results
@@ -2147,19 +2083,13 @@ class ChopperTune:
             }
         )
 
-        overall_duration = time.time() - overall_start_time
+        duration = time.time() - start_time
 
         self.gcode.respond_info(
-            f"Optimization Completed in {overall_duration:.2f} seconds!\n"
-        )
-        if self.search_method == SearchMethod.Adaptive:
-            self.gcode.respond_info(
-                f"Stage 1/2 took {first_run_duration:.2f} seconds!\n"
-                f"Stage 2/2 took {second_run_duration:.2f} seconds!\n"
-            )
-        self.gcode.respond_info(
+            f"Optimization Completed in {duration:.2f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            f"Best Score        : {self.best_result:.2f}\n\n"
+            f"   reused samples : {self.number_of_samples - self.number_of_real_samples}\n"
+            f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
             f"current      : {overall_best_params['current']}\n"
