@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 # Third-Party Imports
 import numpy as np
-from scipy.optimize import differential_evolution
+from scipy.optimize import brute, differential_evolution
 
 # Klipper Imports
 
@@ -697,7 +697,10 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
-        self.number_of_samples = 0
+        self.total_number_of_samples = -1  # the expected number of samples
+        self.number_of_samples = 0  # current number of samples taken
+        self.number_of_real_samples = 0 # current number of real samples taken
+        self.best_result = 999_999_999  # store the best result
 
         # Calculated values
         self.search_method = None
@@ -1481,9 +1484,9 @@ class ChopperTune:
         else:
             # no need to keep the file in adaptive mode so use it from /tmp
             measurement_data_path = accelerometer_measurement.get_full_path()
-        # self.respond_info(f"Accel. data: {measurement_data_path}")
 
         self.number_of_samples += 1
+        self.number_of_real_samples += 1
 
         return measurement_data_path
 
@@ -1595,6 +1598,8 @@ class ChopperTune:
             None | dict: The best parameters found, or None if tuning was not
                 done using the adaptive method.
         """
+        # reset best result
+        self.best_result = 999_999_999
         self.search_method = search_method
 
         # Force brute_force in vibration measurement mode
@@ -1763,50 +1768,40 @@ class ChopperTune:
             (self.tpfd_min, self.tpfd_max),
         ]
         best_parameters = None
-        if self.search_method == SearchMethod.Adaptive:
-            # Run adaptive optimization
-            best_parameters = self.run_optimization()
+
+        if self.measurement_mode == MeasurementMode.Vibrations:
+            best_parameters = self.search_best_parameters()
         else:
-            # Brute-force search
             speed_vs_vibrations = []
-            for current in range(
-                current_min, current_max + 1, self.current_change_step
+            for speed in range(
+                int(min_speed * 100),
+                int(max_speed * 100) + 1,
+                int(speed_change_step * 100),
             ):
-                for tbl in range(tbl_min, tbl_max + 1):
-                    for toff in range(toff_min, toff_max + 1):
-                        for hstrt in range(hstrt_min, hstrt_max + 1):
-                            for hend in range(hend_min, hend_max + 1):
-                                if (hend + hstrt) > hstrt_hend_max:
-                                    continue
-                                for tpfd in range(tpfd_min, tpfd_max + 1):
-                                    for speed in range(
-                                        int(min_speed * 100),
-                                        int(max_speed * 100) + 1,
-                                        int(speed_change_step * 100),
-                                    ):
-                                        speed = speed / 100
-                                        for iteration in range(self.iterations):
-                                            measured_vibrations = (
-                                                self.execute_vibration_measurement(
-                                                    speed,
-                                                    max_speed,
-                                                    travel_distance,
-                                                    coord_generator,
-                                                    accel_chip,
-                                                    steppers,
-                                                    static_noise_magnitude,
-                                                    iteration,
-                                                    current,
-                                                    tbl,
-                                                    toff,
-                                                    hstrt,
-                                                    hend,
-                                                    tpfd,
-                                                )
-                                            )
-                                            speed_vs_vibrations.append(
-                                                (speed, measured_vibrations)
-                                            )
+                speed = speed / 100
+                for iteration in range(self.iterations):
+                    measured_vibrations = (
+                        self.execute_vibration_measurement(
+                            speed,
+                            max_speed,
+                            travel_distance,
+                            coord_generator,
+                            accel_chip,
+                            steppers,
+                            static_noise_magnitude,
+                            iteration,
+                            current_min,
+                            tbl_min,
+                            toff_min,
+                            hstrt_min,
+                            hend_min,
+                            tpfd_min,
+                        )
+                    )
+                    speed_vs_vibrations.append(
+                        (speed, measured_vibrations)
+                    )
+
             if self.measurement_mode == MeasurementMode.Resonances:
                 max_vibrations_and_speed = sorted(
                     speed_vs_vibrations, key=lambda x: x[1]
@@ -1936,6 +1931,25 @@ class ChopperTune:
         self.respond_info(f"Measured vibrations: {measured_vibrations:0.2f} mm/s²")
         return measured_vibrations
 
+    def progress_report(self) -> None:
+        """Report progress."""
+        if self.total_expected_samples > 0:
+            percent_complete = (
+                self.number_of_samples / self.total_expected_samples
+            ) * 100
+            self.respond_info(
+                f"Progress: {self.number_of_samples}/"
+                f"{self.total_expected_samples} "
+                f"({percent_complete:0.2f}%) - "
+                f"Real samples: {self.number_of_real_samples}"
+            )
+        else:
+            # just report sample statistics
+            self.respond_info(
+                f"Samples taken: {self.number_of_samples} - "
+                f"Real samples: {self.number_of_real_samples}"
+            )
+
     def objective_function(self, params: list[float]) -> float:
         """Objective function for optimization.
 
@@ -1952,6 +1966,8 @@ class ChopperTune:
             self.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
             )
+            self.number_of_samples += 1  # consider this as a sample
+            self.progress_report()
             return float('inf')
 
         total_vibrations = 0
@@ -1973,12 +1989,19 @@ class ChopperTune:
                 tpfd,
             )
             total_vibrations += measured_vibrations
+            self.progress_report()
         total_vibrations /= self.iterations
-        self.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
+        if self.iterations > 1:
+            self.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
+        # store best result for the last report
+        self.best_result = min(self.best_result, total_vibrations)
         return total_vibrations
 
-    def run_optimization(self) -> list[int]:
-        """Run the optimization process.
+    def search_best_parameters(self) -> list[int]:
+        """Run the parameter search process.
+
+        This can use either brute-force or adaptive optimization methods depending
+        on the selected search method.
 
         Returns:
             dict: The best parameters found.
@@ -1987,20 +2010,17 @@ class ChopperTune:
         self.respond_info("Starting optimization 1/2...")
         start_time = time.time()
         overall_start_time = start_time
+        first_run_duration = 0
+        second_run_duration = 0
 
-        # 'strategy' and 'popsize' are tuned to reduce total measurements
-        # 'tol' can be higher since our parameters are discrete
-
-        # Do a two-step optimization to speed up the process
-        # First run, lock all params except toff and hend
-        partial_bounds = [
-            (self.current_min, self.current_min),  # lock current
-            (self.tbl_min, self.tbl_min),  # lock current
-            (self.toff_min, self.toff_max),
-            (self.hstrt_min, self.hstrt_min),  # lock current
-            (self.hend_min, self.hend_max),
-            (self.tpfd_min, self.tpfd_min),  # lock current
-        ]
+        overall_best_params = {
+            "current": -1,
+            "tbl": -1,
+            "toff": -1,
+            "hstrt": -1,
+            "hend": -1,
+            "tpfd": -1,
+        }
 
         # set initial values
         self.apply_registers(steppers=self.steppers, field="curr", value=self.current_min)
@@ -2010,95 +2030,155 @@ class ChopperTune:
         self.apply_registers(steppers=self.steppers, field="hstrt", value=self.hstrt_min)
         self.apply_registers(steppers=self.steppers, field="tpfd", value=self.tpfd_min)
 
-        result = differential_evolution(
-            self.objective_function,
-            partial_bounds,
-            init="sobol",
-            strategy="best1bin",
-            maxiter=10,
-            popsize=5,  # Total evaluations = maxiter * popsize * N_params
-            tol=0.1,
-            mutation=(0.5, 1),
-            recombination=0.7,
-            polish=False,  # Polish uses local minimize, which we avoid for discrete
-        )
+        if self.search_method == SearchMethod.BruteForce:
+            # Brute-force search
+            bounds = [
+                slice(self.current_min, self.current_max + 1, self.current_change_step),
+                slice(self.tbl_min, self.tbl_max + 1, 1),
+                slice(self.toff_min, self.toff_max + 1, 1),
+                slice(self.hstrt_min, self.hstrt_max + 1, 1),
+                slice(self.hend_min, self.hend_max + 1, 1),
+                slice(self.tpfd_min, self.tpfd_max + 1, 1),
+            ]
 
-        best_params = [round(p) for p in result.x]
-        duration = time.time() - start_time
-        first_run_duration = duration
+            # update total expected samples
+            total_current_steps = (
+                (self.current_max - self.current_min) // self.current_change_step + 1
+            )
+            total_tbl_steps = self.tbl_max - self.tbl_min + 1
+            total_toff_steps = self.toff_max - self.toff_min + 1
+            total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
+            total_hend_steps = self.hend_max - self.hend_min + 1
+            total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
+            self.total_expected_samples = (
+                total_current_steps
+                * total_tbl_steps
+                * total_toff_steps
+                * total_hstrt_steps
+                * total_hend_steps
+                * total_tpfd_steps
+                * self.iterations
+            )
 
-        overall_best_params = {
+            result = brute(
+                self.objective_function,
+                bounds,
+                finish=None,  # disable local optimization at the end
+            )
+
+            best_params = [round(p) for p in result]
+        else:
+            # Adaptive search
+            # 'strategy' and 'popsize' are tuned to reduce total measurements
+            # 'tol' can be higher since our parameters are discrete
+
+            # Do a two-step optimization to speed up the process
+            # First run, lock all params except toff and hend
+            partial_bounds = [
+                (self.current_min, self.current_min),  # lock current
+                (self.tbl_min, self.tbl_min),  # lock current
+                (self.toff_min, self.toff_max),
+                (self.hstrt_min, self.hstrt_min),  # lock current
+                (self.hend_min, self.hend_max),
+                (self.tpfd_min, self.tpfd_min),  # lock current
+            ]
+
+            result = differential_evolution(
+                self.objective_function,
+                partial_bounds,
+                init="sobol",
+                strategy="best1bin",
+                maxiter=10,
+                popsize=5,  # Total evaluations = maxiter * popsize * N_params
+                tol=0.1,
+                mutation=(0.5, 1),
+                recombination=0.7,
+                polish=False,  # Polish uses local minimize, which we avoid for discrete
+            )
+
+            best_params = [round(p) for p in result.x]
+            duration = time.time() - start_time
+            first_run_duration = duration
+
+            # update overall best params with first run results
+            overall_best_params.update({
+                "current": best_params[0],
+                "tbl": best_params[1],
+                "toff": best_params[2],
+                "hstrt": best_params[3],
+                "hend": best_params[4],
+                "tpfd": best_params[5],
+            })
+
+            self.respond_info(
+                f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
+                f"Number of samples : {self.number_of_samples}\n"
+                f"Best Score        : {self.best_result:.2f}\n\n"
+                "Parameters\n"
+                "----------\n"
+                f"current      : {overall_best_params['current']}\n"
+                f"driver_tbl   : {overall_best_params['tbl']}\n"
+                f"driver_toff  : {overall_best_params['toff']}\n"
+                f"driver_hstrt : {overall_best_params['hstrt']}\n"
+                f"driver_hend  : {overall_best_params['hend']}\n"
+            )
+            if self.driver in ["2240", "5160"]:
+                self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+
+            # Second run, lock toff and hend to best values from first run
+            start_time = time.time()
+            self.respond_info(
+                "Starting optimization 2/2 with narrowed bounds..."
+            )
+
+            partial_bounds = [
+                (self.current_min, self.current_max),
+                (self.tbl_min, self.tbl_max),
+                (overall_best_params["toff"], overall_best_params["toff"]),  # lock to the best found
+                (self.hstrt_min, self.hstrt_max),
+                (overall_best_params["hend"], overall_best_params["hend"]),  # lock to the best found
+                (self.tpfd_min, self.tpfd_max),
+            ]
+
+            result = differential_evolution(
+                self.objective_function,
+                partial_bounds,
+                init="sobol",
+                strategy="best1bin",
+                maxiter=10,
+                popsize=5,  # Total evaluations = maxiter * popsize * N_params
+                tol=0.1,
+                mutation=(0.5, 1),
+                recombination=0.7,
+                polish=False,  # Polish uses local minimize, which we avoid for discrete
+            )
+
+            second_run_duration = time.time() - start_time
+            best_params = [round(p) for p in result.x]
+
+        # update overall best params with final results
+        overall_best_params.update({
             "current": best_params[0],
             "tbl": best_params[1],
             "toff": best_params[2],
             "hstrt": best_params[3],
             "hend": best_params[4],
             "tpfd": best_params[5],
-        }
-
-        self.respond_info(
-            f"Optimization 1/2 Completed in {first_run_duration:.2f} seconds!\n"
-            f"Number of samples : {self.number_of_samples}\n"
-            f"Best Score        : {result.fun:.2f}\n\n"
-            "Parameters\n"
-            "----------\n"
-            f"current      : {overall_best_params['current']}\n"
-            f"driver_tbl   : {overall_best_params['tbl']}\n"
-            f"driver_toff  : {overall_best_params['toff']}\n"
-            f"driver_hstrt : {overall_best_params['hstrt']}\n"
-            f"driver_hend  : {overall_best_params['hend']}\n"
-        )
-        if self.driver in ["2240", "5160"]:
-            self.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
-
-        # Second run, lock toff and hend to best values from first run
-        start_time = time.time()
-        self.respond_info(
-            "Starting optimization 2/2 with narrowed bounds..."
-        )
-
-        partial_bounds = [
-            (self.current_min, self.current_max),
-            (self.tbl_min, self.tbl_max),
-            (overall_best_params["toff"], overall_best_params["toff"]),  # lock to the best found
-            (self.hstrt_min, self.hstrt_max),
-            (overall_best_params["hend"], overall_best_params["hend"]),  # lock to the best found
-            (self.tpfd_min, self.tpfd_max),
-        ]
-
-        result = differential_evolution(
-            self.objective_function,
-            partial_bounds,
-            init="sobol",
-            strategy="best1bin",
-            maxiter=10,
-            popsize=5,  # Total evaluations = maxiter * popsize * N_params
-            tol=0.1,
-            mutation=(0.5, 1),
-            recombination=0.7,
-            polish=False,  # Polish uses local minimize, which we avoid for discrete
-        )
-
-        best_params = [round(p) for p in result.x]
-
-        overall_best_params.update({
-            "current": best_params[0],
-            "tbl": best_params[1],
-            # "toff": best_params[2],
-            "hstrt": best_params[3],
-            # "hend": best_params[4],
-            "tpfd": best_params[5],
         })
 
-        second_run_duration = time.time() - start_time
         overall_duration = time.time() - overall_start_time
 
         self.respond_info(
             f"Optimization Completed in {overall_duration:.2f} seconds!\n"
-            f"Stage 1/2 took {first_run_duration:.2f} seconds!\n"
-            f"Stage 2/2 took {second_run_duration:.2f} seconds!\n"
+        )
+        if self.search_method == SearchMethod.Adaptive:
+            self.respond_info(
+                f"Stage 1/2 took {first_run_duration:.2f} seconds!\n"
+                f"Stage 2/2 took {second_run_duration:.2f} seconds!\n"
+            )
+        self.respond_info(
             f"Number of samples : {self.number_of_samples}\n"
-            f"Best Score        : {result.fun:.2f}\n\n"
+            f"Best Score        : {self.best_result:.2f}\n\n"
             "Parameters\n"
             "----------\n"
             f"current      : {overall_best_params['current']}\n"
