@@ -13,21 +13,13 @@ from __future__ import annotations
 
 import csv
 import glob
-import multiprocessing
 import os
 import re
 import shutil
-import time
 import traceback
 from enum import IntEnum
-from functools import cache, reduce, wraps
-from typing import TYPE_CHECKING, Callable
-
-# Third-Party Imports
-import numpy as np
-from scipy.optimize import brute, differential_evolution
-
-# Klipper Imports
+from functools import cache, reduce
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sys
@@ -43,6 +35,7 @@ if TYPE_CHECKING:
         from typing import Self
     else:
         from typing_extensions import Self
+
 
 IS_DIGIT = re.compile(r"[0-9\-.]+")
 
@@ -221,50 +214,48 @@ class AccelerometerMeasure:
             f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name}"
         )
 
+    def wait_for_file_write(self, data_path: str) -> None:
+        """Wait for file write to complete.
+
+        Args:
+            data_path (str): The path to the CSV file.
+        """
+        start_time = self.reactor.monotonic()
+        max_wait_time = 10  # seconds
+        prev_size = -1
+        curr_size = 0
+
+        # while not os.path.exists(data_path) or prev_size != curr_size:
+        while True:
+            curr_size = os.path.getsize(data_path) if os.path.exists(data_path) else 0
+            if curr_size > 0 and curr_size == prev_size:
+                break
+
+            prev_size = curr_size
+
+            # Yield control back to Klipper for 100ms
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+            if self.reactor.monotonic() - start_time > max_wait_time:
+                self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
+                break
+
     def move(self) -> str:
         """Move the measurement file over the DATA_FOLDER.
 
         Returns:
             str: The final destination path of the measurement file.
         """
-        if not os.path.exists(DATA_FOLDER):
-            self.gcode.respond_info(f"Data folder doesn't exist: {DATA_FOLDER}")
-            self.gcode.respond_info(f"Creating: {DATA_FOLDER}")
-            os.makedirs(DATA_FOLDER, exist_ok=True)
         destination = os.path.join(DATA_FOLDER, self.full_name)
         if os.path.exists(destination):
-            # remove the previous file
             os.remove(destination)
 
-        def do_threaded_move() -> None:
-            """Move the measurement file in another thread.
+        self.wait_for_file_write(self.full_path)
 
-            ...so the main process is not blocked.
-            """
-            start_time = time.time()
-            max_wait_time = 10  # seconds
-            prev_size = -1
-            curr_size = (
-                0
-                if not os.path.exists(self.full_path)
-                else os.path.getsize(self.full_path)
-            )
-            while not os.path.exists(self.full_path) or prev_size != curr_size:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
-                if os.path.exists(self.full_path):
-                    prev_size = curr_size
-                    curr_size = os.path.getsize(self.full_path)
-                if (time.time() - start_time) > max_wait_time:
-                    break
-
-            if os.path.exists(self.full_path):
-                shutil.move(self.full_path, destination)
-            else:
-                self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
-
-        move_proc = multiprocessing.Process(target=do_threaded_move)
-        move_proc.daemon = True
-        move_proc.start()
+        if os.path.exists(self.full_path):
+            shutil.move(self.full_path, destination)
+        else:
+            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
 
         return destination
 
@@ -276,23 +267,7 @@ class AccelerometerMeasure:
         Returns:
             str: The final destination path of the measurement file.
         """
-        start_time = time.time()
-        max_wait_time = 10  # seconds
-        prev_size = -1
-        curr_size = (
-            0 if not os.path.exists(self.full_path) else os.path.getsize(self.full_path)
-        )
-        while not os.path.exists(self.full_path) or prev_size != curr_size:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-            if os.path.exists(self.full_path):
-                prev_size = curr_size
-                curr_size = os.path.getsize(self.full_path)
-            if (time.time() - start_time) > max_wait_time:
-                break
-
-        if not os.path.exists(self.full_path):
-            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
-
+        self.wait_for_file_write(self.full_path)
         return self.full_path
 
 
@@ -601,7 +576,7 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
-        self.total_expected_samples = -1 # the expected number of samples
+        self.total_expected_samples = -1  # the expected number of samples
         self.number_of_samples = 0  # current number of samples taken
         self.number_of_real_samples = 0  # current number of real samples taken
         self.best_result = 999_999_999  # store the best result
@@ -1300,7 +1275,7 @@ class ChopperTune:
         Returns:
             str: The measurement data file path.
         """
-        start_time = time.time()
+        start_time = self.reactor.monotonic()
         self.toolhead.wait_moves()
         with AccelerometerMeasure(
             printer=self.printer,
@@ -1321,7 +1296,7 @@ class ChopperTune:
             measurement_data_path = accelerometer_measurement.get_full_path()
         self.gcode.respond_info(f"Noise Data: {measurement_data_path}")
         if self.debug:
-            duration = time.time() - start_time
+            duration = self.reactor.monotonic() - start_time
             self.gcode.respond_info(
                 f"AccelerometerMeasure took {duration:0.1f} seconds"
             )
@@ -1434,20 +1409,26 @@ class ChopperTune:
         Args:
             data_path (str): The path to the CSV file.
         """
-        start_time = time.time()
+        start_time = self.reactor.monotonic()
         max_wait_time = 10  # seconds
         prev_size = -1
-        curr_size = 0 if not os.path.exists(data_path) else os.path.getsize(data_path)
-        while not os.path.exists(data_path) or prev_size != curr_size:
-            # sleep while the file is getting written
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-            if os.path.exists(data_path):
-                prev_size = curr_size
-                curr_size = os.path.getsize(data_path)
-            if (time.time() - start_time) > max_wait_time:
+        curr_size = 0
+
+        while True:
+            curr_size = os.path.getsize(data_path) if os.path.exists(data_path) else 0
+            if curr_size > 0 and curr_size == prev_size:
                 break
 
-    def calc_static_magnitude(self, data_path: str) -> np.ndarray:
+            prev_size = curr_size
+
+            # Yield control back to Klipper for 100ms
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+            if self.reactor.monotonic() - start_time > max_wait_time:
+                self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
+                break
+
+    def calc_static_magnitude(self, data_path: str) -> tuple[float, float, float]:
         """Calculate static acceleration data from CSV file.
 
         Args:
@@ -1455,8 +1436,11 @@ class ChopperTune:
                 acceleration data.
 
         Returns:
-            np.ndarray: Mean static acceleration values for x, y, z axes.
+            tuple[float, float, float]: Mean static acceleration values for x,
+                y, z axes.
         """
+        import numpy as np
+
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = np.array(
@@ -1469,19 +1453,24 @@ class ChopperTune:
                     for row in csv.DictReader(file)
                 ]
             )
-        return np.mean(data, axis=0)
+        return tuple(float(f) for f in np.mean(data, axis=0))
 
-    def calc_magnitude(self, data_path: str, static_data: np.ndarray) -> float:
+    def calc_magnitude(
+        self, data_path: str, static_data: tuple[float, float, float]
+    ) -> float:
         """Calculate median magnitude of acceleration data from CSV file.
 
         Args:
-            data_path (str): The path to the CSV file containing acceleration data.
-            static_data (np.ndarray): Mean static acceleration values for x, y, z
-                axes.
+            data_path (str): The path to the CSV file containing acceleration
+                data.
+            static_data (tuple[float, float, float]): Mean static acceleration
+                values for x, y, z axes.
 
         Returns:
             float: Median magnitude of acceleration data.
         """
+        import numpy as np
+
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = (
@@ -1499,7 +1488,7 @@ class ChopperTune:
             )
         trim_size = len(data) // CUTOFF_RANGE
         data = data[trim_size:-trim_size]
-        return np.median(np.linalg.norm(data, axis=1))
+        return float(np.median(np.linalg.norm(data, axis=1)))
 
     def chopper_tune(
         self,
@@ -1702,7 +1691,7 @@ class ChopperTune:
 
         # Measure accelerometer noise
         static_data_path = self.measure_accelerometer_noise(accel_chip)
-        static_noise_magnitude = tuple(self.calc_static_magnitude(static_data_path))
+        self.static_noise_magnitude = self.calc_static_magnitude(static_data_path)
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
@@ -1718,7 +1707,6 @@ class ChopperTune:
         self.accel_chip = accel_chip
         self.steppers = steppers
         self.current = current_min
-        self.static_noise_magnitude = static_noise_magnitude  # make it immutable
 
         # bounds
         self.current_min = current_min
@@ -1764,7 +1752,7 @@ class ChopperTune:
                         coord_generator,
                         accel_chip,
                         steppers,
-                        static_noise_magnitude,
+                        self.static_noise_magnitude,
                         iteration,
                         current_min,
                         tbl_min,
@@ -1816,7 +1804,7 @@ class ChopperTune:
         self.number_of_samples = 0
         return best_parameters
 
-    @cache
+    @cache  # noqa: B019
     def execute_vibration_measurement(
         self,
         speed: float,
@@ -1964,12 +1952,21 @@ class ChopperTune:
                 tpfd,
             )
             total_vibrations += measured_vibrations
+
             self.progress_report()
+
+            # Allow other Klipper tasks to run between iterations
+            self.reactor.pause(self.reactor.monotonic() + 0.05)
+
         total_vibrations /= self.iterations
         if self.iterations > 1:
             self.gcode.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
         # store best result for the last report
         self.best_result = min(self.best_result, total_vibrations)
+
+        # Allow other Klipper tasks to run between iterations
+        self.reactor.pause(self.reactor.monotonic() + 0.05)
+
         return total_vibrations
 
     def search_best_parameters(self) -> list[int]:
@@ -1981,8 +1978,10 @@ class ChopperTune:
         Returns:
             dict: The best parameters found.
         """
-        self.gcode.respond_info("Starting optimization 1/2...")
-        start_time = time.time()
+        from scipy.optimize import brute, differential_evolution
+
+        self.gcode.respond_info("Starting optimization...")
+        start_time = self.reactor.monotonic()
 
         overall_best_params = {
             "current": -1,
@@ -2083,12 +2082,13 @@ class ChopperTune:
             }
         )
 
-        duration = time.time() - start_time
+        duration = self.reactor.monotonic() - start_time
 
         self.gcode.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            f"   reused samples : {self.number_of_samples - self.number_of_real_samples}\n"
+            "   reused samples : "
+            f"{self.number_of_samples - self.number_of_real_samples}\n"
             f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
@@ -2100,6 +2100,26 @@ class ChopperTune:
         )
         if self.driver in ["2240", "5160"]:
             self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+
+        # Apply best parameters one last time
+        self.apply_registers(
+            steppers=self.steppers, field="curr", value=overall_best_params["current"]
+        )
+        self.apply_registers(
+            steppers=self.steppers, field="tbl", value=overall_best_params["tbl"]
+        )
+        self.apply_registers(
+            steppers=self.steppers, field="toff", value=overall_best_params["toff"]
+        )
+        self.apply_registers(
+            steppers=self.steppers, field="hend", value=overall_best_params["hend"]
+        )
+        self.apply_registers(
+            steppers=self.steppers, field="hstrt", value=overall_best_params["hstrt"]
+        )
+        self.apply_registers(
+            steppers=self.steppers, field="tpfd", value=overall_best_params["tpfd"]
+        )
 
         # clear the cache for the next runs
         self.execute_vibration_measurement.cache_clear()
@@ -2140,6 +2160,17 @@ class ChopperTune:
 
         Returns:
             bool: True if command completed successfully, False otherwise.
+        """
+        self.reactor.register_callback(
+            lambda e: self.parse_args_and_run_optimization(gcmd)
+        )
+        return True
+
+    def parse_args_and_run_optimization(self, gcmd: GCodeCommand) -> None:
+        """Collect data from G-Code command and run optimization.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
         """
         try:
             axis = gcmd.get("AXIS", "x").lower()
