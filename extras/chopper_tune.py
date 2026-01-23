@@ -803,7 +803,7 @@ class ChopperTune:
         ) / 2
         b_axis_mid = (
             self.stepper_settings[f"stepper_{axes[1]}"]["position_max"]
-            - self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
+            + self.stepper_settings[f"stepper_{axes[1]}"]["position_min"]
         ) / 2
         return a_axis_min, a_axis_max, a_axis_mid, b_axis_mid
 
