@@ -1867,9 +1867,11 @@ class ChopperTune:
         self.apply_registers(steppers=steppers, field="tpfd", value=tpfd)
 
         # Dump TMC settings
-        self.gcode.run_script_from_command(
-            f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
-        )
+        for stepper_index in range(self.registers["stepper_count"]):
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            self.gcode.run_script_from_command(
+                f"DUMP_TMC STEPPER={steppers[0]}{stepper_index} REGISTER=chopconf"
+            )
         freq = self.calculate_frequency(tbl, toff)
         name = (
             f"__{current}_{tbl}_{toff}_{hstrt}_"
@@ -2148,18 +2150,20 @@ class ChopperTune:
         if best_parameters is None:
             return
 
-        for field, value in best_parameters.items():
-            if field == "tpfd" and self.driver not in ["2240", "5160"]:
-                continue  # skip tpfd for unsupported drivers
+        for stepper_index in range(self.registers["stepper_count"]):
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            for field, value in best_parameters.items():
+                if field == "tpfd" and self.driver not in ["2240", "5160"]:
+                    continue  # skip tpfd for unsupported drivers
 
-            field_name = f"driver_{field}" if field != "current" else "run_current"
-            value = str(value) if field != "current" else f"{value / 1000:0.2f}"
+                field_name = f"driver_{field}" if field != "current" else "run_current"
+                value = str(value) if field != "current" else f"{value / 1000:0.2f}"
 
-            self.configfile.set(
-                f"tmc{self.driver} {self.steppers[0]}",
-                field_name,
-                value,
-            )
+                self.configfile.set(
+                    f"tmc{self.driver} {self.steppers[0]}{stepper_index}",
+                    field_name,
+                    value,
+                )
 
         self.gcode.respond_info(
             "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
