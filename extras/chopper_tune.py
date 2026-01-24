@@ -21,6 +21,10 @@ from enum import IntEnum
 from functools import cache, reduce
 from typing import TYPE_CHECKING
 
+# Third Party Imports
+import numpy as np
+
+
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
@@ -1439,8 +1443,6 @@ class ChopperTune:
             tuple[float, float, float]: Mean static acceleration values for x,
                 y, z axes.
         """
-        import numpy as np
-
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = np.array(
@@ -1469,8 +1471,6 @@ class ChopperTune:
         Returns:
             float: Median magnitude of acceleration data.
         """
-        import numpy as np
-
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = (
