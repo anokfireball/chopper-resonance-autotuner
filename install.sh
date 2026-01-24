@@ -84,8 +84,15 @@ if [ -f "$blk_path" ]; then
     fi
 fi
 
+# Install Python dependencies to Klipper
+source ~/klipper-env/bin/activate
+pip install uv
+uv pip install -r $repo_path/requirements.txt
+deactivate
+
 # Create virtual environment and install dependencies
 python3 -m venv $repo_path/.venv
 source $repo_path/.venv/bin/activate
 pip install uv
 uv pip install -r $repo_path/requirements.txt
+deactivate
