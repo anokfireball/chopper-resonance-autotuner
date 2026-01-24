@@ -1049,8 +1049,8 @@ class ChopperTune:
             # get gear ratio
             gear_ratio = self.stepper_settings[steppers[0]].get("gear_ratio")
             if not gear_ratio:  # can be () or None
-                gear_ratio = "1:1"
-            gear_ratio = tuple(float(r) for r in gear_ratio.split(":"))
+                gear_ratio = ((1, 1),)
+            gear_ratio = tuple(float(r) for r in gear_ratio[0])
             full_steps_per_rotation = self.stepper_settings[steppers[0]].get(
                 "full_steps_per_rotation", 200
             )
@@ -1060,7 +1060,7 @@ class ChopperTune:
                 / 200
                 / (float(gear_ratio[0]) / float(gear_ratio[1]))
                 * rotation_dist
-                / 60
+                / 60  # to convert to mm/s from mm/min
             )
 
             if min_speed == "default":
@@ -1934,7 +1934,7 @@ class ChopperTune:
         """
         current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
 
-        # penalize hstart + hend > hstrt_hend_max
+        # penalize hstrt + hend > hstrt_hend_max
         if hstrt + hend > self.hstrt_hend_max:
             self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
@@ -2097,7 +2097,7 @@ class ChopperTune:
         self.gcode.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            "   reused samples : "
+            "reused samples    : "
             f"{self.number_of_samples - self.number_of_real_samples}\n"
             f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
             "Parameters\n"
@@ -2269,7 +2269,6 @@ class ChopperTune:
             bool: True if command completed successfully, False otherwise.
         """
         try:
-            # self.gcode.respond_info(f"required_rpm: {self.required_rpm}")
             self.gcode.respond_info(f"x stepper count: {self.get_stepper_count('x')}")
             self.gcode.respond_info(f"y stepper count: {self.get_stepper_count('y')}")
             self.gcode.respond_info(f"z stepper count: {self.get_stepper_count('z')}")
