@@ -556,10 +556,11 @@ class ChopperTune:
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
-        self._settings = None
+        self.toolhead = None
+        self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
-        self._driver_settings = {}
-        self._stepper_settings = {}
+        self.driver_settings = {}
+        self.stepper_settings = {}
         self.registers = {
             "stepper_count": 0,
             "tbl": -1,
@@ -569,9 +570,6 @@ class ChopperTune:
             "tpfd": -1,
             "curr": -1,
         }
-
-        # state variables
-        self._toolhead = None
 
         # config values
         self.debug = config.getboolean("debug", False)
@@ -626,63 +624,25 @@ class ChopperTune:
         self.tpfd_max = None
 
         self.register_commands()
+        self.printer.register_event_handler("klippy:connect", self._connect)
 
     def register_commands(self) -> None:
         """Register GCode commands."""
         self.gcode.register_command("CHOPPER_TUNE", self.cmd_chopper_tune)
         self.gcode.register_command("CHOPPER_TUNE_DEBUG", self.cmd_chopper_tune_debug)
 
-    @property
-    def settings(self) -> dict:
-        """Return the settings dictionary.
-
-        Returns:
-            dict: The settings dictionary.
-        """
-        if self._settings is None:
-            self._settings = self.configfile.get_status(None)["settings"]
-
-        return self._settings
-
-    @property
-    def toolhead(self) -> ToolHead:
-        """Return the toolhead.
-
-        Returns:
-            ToolHead: The toolhead.
-        """
-        if self._toolhead is None:
-            self._toolhead = self.printer.lookup_object("toolhead")
-        return self._toolhead
-
-    @property
-    def driver_settings(self) -> dict:
-        """Return the driver settings dictionary.
-
-        Returns:
-            dict: The driver settings dictionary.
-        """
-        if not self._driver_settings:
-            for axis in "xyz":
-                driver, _ = self.detect_driver(axis)
-                self._driver_settings[f"stepper_{axis}"] = self.settings.get(
-                    f"tmc{driver} stepper_{axis}", {}
-                )
-        return self._driver_settings
-
-    @property
-    def stepper_settings(self) -> dict:
-        """Return the stepper settings dictionary.
-
-        Returns:
-            dict: The stepper settings dictionary.
-        """
-        if not self._stepper_settings:
-            for axis in "xyz":
-                self._stepper_settings[f"stepper_{axis}"] = self.settings.get(
-                    f"stepper_{axis}", {}
-                )
-        return self._stepper_settings
+    def _connect(self) -> None:
+        """Handle printer connect event."""
+        self.settings = self.configfile.get_status(None)["settings"]
+        self.toolhead = self.printer.lookup_object("toolhead")
+        for axis in "xyz":
+            driver, _ = self.detect_driver(axis)
+            self.driver_settings[f"stepper_{axis}"] = self.settings.get(
+                f"tmc{driver} stepper_{axis}", {}
+            )
+            self.stepper_settings[f"stepper_{axis}"] = self.settings.get(
+                f"stepper_{axis}", {}
+            )
 
     def clean_csv_files(self) -> None:
         """Clean temporary data files and exit."""
