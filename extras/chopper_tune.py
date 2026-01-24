@@ -244,8 +244,12 @@ class AccelerometerMeasure:
                 self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
                 break
 
-    def move(self) -> str:
+    def move(self, wait: bool = True) -> str:
         """Move the measurement file over the DATA_FOLDER.
+
+        Args:
+            wait (bool): If True, wait for file write to complete before
+                moving. Default is True.
 
         Returns:
             str: The final destination path of the measurement file.
@@ -254,7 +258,8 @@ class AccelerometerMeasure:
         if os.path.exists(destination):
             os.remove(destination)
 
-        self.wait_for_file_write(self.full_path)
+        if wait:
+            self.wait_for_file_write(self.full_path)
 
         if os.path.exists(self.full_path):
             shutil.move(self.full_path, destination)
@@ -263,15 +268,20 @@ class AccelerometerMeasure:
 
         return destination
 
-    def get_full_path(self) -> str:
+    def get_full_path(self, wait: bool = True) -> str:
         """Get the data full path.
 
         Before returning the data path, ensure the file has been written.
 
+        Args:
+            wait (bool): If True, wait for file write to complete before
+                returning the path. Default is True.
+
         Returns:
             str: The final destination path of the measurement file.
         """
-        self.wait_for_file_write(self.full_path)
+        if wait:
+            self.wait_for_file_write(self.full_path)
         return self.full_path
 
 
