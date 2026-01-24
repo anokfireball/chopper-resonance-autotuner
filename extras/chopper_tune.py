@@ -1754,6 +1754,7 @@ class ChopperTune:
                 int(speed_change_step * 100),
             ):
                 speed = speed / 100
+                total_measured_vibrations = 0.0
                 for iteration in range(self.iterations):
                     measured_vibrations = self.execute_vibration_measurement(
                         speed,
@@ -1771,7 +1772,9 @@ class ChopperTune:
                         hend_min,
                         tpfd_min,
                     )
-                    speed_vs_vibrations.append((speed, measured_vibrations))
+                    total_measured_vibrations += measured_vibrations
+                measured_vibrations = total_measured_vibrations / self.iterations
+                speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
                 max_vibrations_and_speed = sorted(
