@@ -21,6 +21,10 @@ from enum import IntEnum
 from functools import cache, reduce
 from typing import TYPE_CHECKING
 
+# Third Party Imports
+import numpy as np
+
+
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
@@ -240,8 +244,12 @@ class AccelerometerMeasure:
                 self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
                 break
 
-    def move(self) -> str:
+    def move(self, wait: bool = True) -> str:
         """Move the measurement file over the DATA_FOLDER.
+
+        Args:
+            wait (bool): If True, wait for file write to complete before
+                moving. Default is True.
 
         Returns:
             str: The final destination path of the measurement file.
@@ -250,7 +258,8 @@ class AccelerometerMeasure:
         if os.path.exists(destination):
             os.remove(destination)
 
-        self.wait_for_file_write(self.full_path)
+        if wait:
+            self.wait_for_file_write(self.full_path)
 
         if os.path.exists(self.full_path):
             shutil.move(self.full_path, destination)
@@ -259,15 +268,20 @@ class AccelerometerMeasure:
 
         return destination
 
-    def get_full_path(self) -> str:
+    def get_full_path(self, wait: bool = True) -> str:
         """Get the data full path.
 
         Before returning the data path, ensure the file has been written.
 
+        Args:
+            wait (bool): If True, wait for file write to complete before
+                returning the path. Default is True.
+
         Returns:
             str: The final destination path of the measurement file.
         """
-        self.wait_for_file_write(self.full_path)
+        if wait:
+            self.wait_for_file_write(self.full_path)
         return self.full_path
 
 
@@ -796,11 +810,11 @@ class ChopperTune:
         if axes[0] == "z":
             acceleration = self.settings["printer"]["max_z_accel"]
             # Idle movements speed
-            travel_speed = self.settings["printer"].get("max_z_velocity", 0) / 2 * 60
+            travel_speed = self.settings["printer"].get("max_z_velocity", 0) / 2
         else:
             acceleration = self.settings["printer"].get("max_accel")
             # Idle movements speed
-            travel_speed = self.settings["printer"].get("max_velocity") / 2 * 60
+            travel_speed = self.settings["printer"].get("max_velocity") / 2
 
         return acceleration, travel_speed
 
@@ -1035,8 +1049,8 @@ class ChopperTune:
             # get gear ratio
             gear_ratio = self.stepper_settings[steppers[0]].get("gear_ratio")
             if not gear_ratio:  # can be () or None
-                gear_ratio = "1:1"
-            gear_ratio = tuple(float(r) for r in gear_ratio.split(":"))
+                gear_ratio = ((1, 1),)
+            gear_ratio = tuple(float(r) for r in gear_ratio[0])
             full_steps_per_rotation = self.stepper_settings[steppers[0]].get(
                 "full_steps_per_rotation", 200
             )
@@ -1046,7 +1060,7 @@ class ChopperTune:
                 / 200
                 / (float(gear_ratio[0]) / float(gear_ratio[1]))
                 * rotation_dist
-                / 60
+                / 60  # to convert to mm/s from mm/min
             )
 
             if min_speed == "default":
@@ -1284,10 +1298,7 @@ class ChopperTune:
             accel_chip=accel_chip,
             name="stand_still",
         ) as accelerometer_measurement:
-            self.gcode.run_script_from_command("G4 P5000")
-        # Wait for another 1 second for the whole data to be written
-        self.gcode.run_script_from_command("G4 P1000")
-        self.toolhead.wait_moves()
+            self.toolhead.dwell(5.0)
         if self.search_method == SearchMethod.BruteForce:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
@@ -1332,21 +1343,9 @@ class ChopperTune:
         ) as accelerometer_measurement:
             # go in both directions at once
             next_coord = coord_generator.next(travel_distance)
-            self.gcode.run_script_from_command(
-                "G0 "
-                f"X{next_coord.x:0.2f} "
-                f"Y{next_coord.y:0.2f} "
-                f"Z{next_coord.z:0.2f} "
-                f"F{speed * 60}"
-            )
+            self.toolhead.manual_move(next_coord, speed)
         # Move to the initial position
-        self.gcode.run_script_from_command(
-            "G0 "
-            f"X{self.initial_position.x:0.2f} "
-            f"Y{self.initial_position.y:0.2f} "
-            f"Z{self.initial_position.z:0.2f} "
-            f"F{self.travel_speed}"
-        )
+        self.toolhead.manual_move(self.initial_position, self.travel_speed)
         coord_generator.current_coord.x = self.initial_position.x
         coord_generator.current_coord.y = self.initial_position.y
         coord_generator.current_coord.z = self.initial_position.z
@@ -1439,8 +1438,6 @@ class ChopperTune:
             tuple[float, float, float]: Mean static acceleration values for x,
                 y, z axes.
         """
-        import numpy as np
-
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = np.array(
@@ -1469,8 +1466,6 @@ class ChopperTune:
         Returns:
             float: Median magnitude of acceleration data.
         """
-        import numpy as np
-
         self.wait_for_file_write(data_path)
         with open(data_path) as file:
             data = (
@@ -1675,13 +1670,7 @@ class ChopperTune:
             f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
         )
         # Move to the initial position
-        self.gcode.run_script_from_command(
-            "G0 "
-            f"X{self.initial_position.x:0.2f} "
-            f"Y{self.initial_position.y:0.2f} "
-            f"Z{self.initial_position.z:0.2f} "
-            f"F{self.travel_speed}"
-        )
+        self.toolhead.manual_move(self.initial_position, self.travel_speed)
 
         # Clean csv files while going to the initial position
         self.clean_csv_files()
@@ -1744,6 +1733,7 @@ class ChopperTune:
                 int(speed_change_step * 100),
             ):
                 speed = speed / 100
+                total_measured_vibrations = 0.0
                 for iteration in range(self.iterations):
                     measured_vibrations = self.execute_vibration_measurement(
                         speed,
@@ -1761,7 +1751,9 @@ class ChopperTune:
                         hend_min,
                         tpfd_min,
                     )
-                    speed_vs_vibrations.append((speed, measured_vibrations))
+                    total_measured_vibrations += measured_vibrations
+                measured_vibrations = total_measured_vibrations / self.iterations
+                speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
                 max_vibrations_and_speed = sorted(
@@ -1772,10 +1764,8 @@ class ChopperTune:
                     f"{max_vibrations_and_speed[0]:0.2f} mm/s"
                 )
 
-        self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(
-            f"G0 {axis}{a_axis_mid} F{self.travel_speed}"
-        )
+        self.toolhead.dwell(0.5)
+        self.toolhead.manual_move((a_axis_mid,), self.travel_speed)
         self.toolhead.wait_moves()
         if self.search_method != SearchMethod.Adaptive:
             if run_plotter:
@@ -1854,9 +1844,11 @@ class ChopperTune:
         self.apply_registers(steppers=steppers, field="tpfd", value=tpfd)
 
         # Dump TMC settings
-        self.gcode.run_script_from_command(
-            f"DUMP_TMC STEPPER={steppers[0]} REGISTER=chopconf"
-        )
+        for stepper_index in range(self.registers["stepper_count"]):
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            self.gcode.run_script_from_command(
+                f"DUMP_TMC STEPPER={steppers[0]}{stepper_index} REGISTER=chopconf"
+            )
         freq = self.calculate_frequency(tbl, toff)
         name = (
             f"__{current}_{tbl}_{toff}_{hstrt}_"
@@ -1924,7 +1916,7 @@ class ChopperTune:
         """
         current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
 
-        # penalize hstart + hend > hstrt_hend_max
+        # penalize hstrt + hend > hstrt_hend_max
         if hstrt + hend > self.hstrt_hend_max:
             self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
@@ -2087,7 +2079,7 @@ class ChopperTune:
         self.gcode.respond_info(
             f"Optimization Completed in {duration:.2f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            "   reused samples : "
+            "reused samples    : "
             f"{self.number_of_samples - self.number_of_real_samples}\n"
             f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
             "Parameters\n"
@@ -2135,18 +2127,20 @@ class ChopperTune:
         if best_parameters is None:
             return
 
-        for field, value in best_parameters.items():
-            if field == "tpfd" and self.driver not in ["2240", "5160"]:
-                continue  # skip tpfd for unsupported drivers
+        for stepper_index in range(self.registers["stepper_count"]):
+            stepper_index = str(stepper_index) if stepper_index > 0 else ""
+            for field, value in best_parameters.items():
+                if field == "tpfd" and self.driver not in ["2240", "5160"]:
+                    continue  # skip tpfd for unsupported drivers
 
-            field_name = f"driver_{field}" if field != "current" else "run_current"
-            value = str(value) if field != "current" else f"{value / 1000:0.2f}"
+                field_name = f"driver_{field}" if field != "current" else "run_current"
+                value = str(value) if field != "current" else f"{value / 1000:0.2f}"
 
-            self.configfile.set(
-                f"tmc{self.driver} {self.steppers[0]}",
-                field_name,
-                value,
-            )
+                self.configfile.set(
+                    f"tmc{self.driver} {self.steppers[0]}{stepper_index}",
+                    field_name,
+                    value,
+                )
 
         self.gcode.respond_info(
             "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
@@ -2259,7 +2253,6 @@ class ChopperTune:
             bool: True if command completed successfully, False otherwise.
         """
         try:
-            # self.gcode.respond_info(f"required_rpm: {self.required_rpm}")
             self.gcode.respond_info(f"x stepper count: {self.get_stepper_count('x')}")
             self.gcode.respond_info(f"y stepper count: {self.get_stepper_count('y')}")
             self.gcode.respond_info(f"z stepper count: {self.get_stepper_count('z')}")
