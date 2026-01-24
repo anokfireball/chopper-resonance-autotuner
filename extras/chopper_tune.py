@@ -810,11 +810,11 @@ class ChopperTune:
         if axes[0] == "z":
             acceleration = self.settings["printer"]["max_z_accel"]
             # Idle movements speed
-            travel_speed = self.settings["printer"].get("max_z_velocity", 0) / 2 * 60
+            travel_speed = self.settings["printer"].get("max_z_velocity", 0) / 2
         else:
             acceleration = self.settings["printer"].get("max_accel")
             # Idle movements speed
-            travel_speed = self.settings["printer"].get("max_velocity") / 2 * 60
+            travel_speed = self.settings["printer"].get("max_velocity") / 2
 
         return acceleration, travel_speed
 
@@ -1298,10 +1298,7 @@ class ChopperTune:
             accel_chip=accel_chip,
             name="stand_still",
         ) as accelerometer_measurement:
-            self.gcode.run_script_from_command("G4 P5000")
-        # Wait for another 1 second for the whole data to be written
-        self.gcode.run_script_from_command("G4 P1000")
-        self.toolhead.wait_moves()
+            self.toolhead.dwell(5.0)
         if self.search_method == SearchMethod.BruteForce:
             # move the measurement file to the DATA_FOLDER
             measurement_data_path = accelerometer_measurement.move()
@@ -1346,21 +1343,9 @@ class ChopperTune:
         ) as accelerometer_measurement:
             # go in both directions at once
             next_coord = coord_generator.next(travel_distance)
-            self.gcode.run_script_from_command(
-                "G0 "
-                f"X{next_coord.x:0.2f} "
-                f"Y{next_coord.y:0.2f} "
-                f"Z{next_coord.z:0.2f} "
-                f"F{speed * 60}"
-            )
+            self.toolhead.manual_move(next_coord, speed)
         # Move to the initial position
-        self.gcode.run_script_from_command(
-            "G0 "
-            f"X{self.initial_position.x:0.2f} "
-            f"Y{self.initial_position.y:0.2f} "
-            f"Z{self.initial_position.z:0.2f} "
-            f"F{self.travel_speed}"
-        )
+        self.toolhead.manual_move(self.initial_position, self.travel_speed)
         coord_generator.current_coord.x = self.initial_position.x
         coord_generator.current_coord.y = self.initial_position.y
         coord_generator.current_coord.z = self.initial_position.z
@@ -1685,13 +1670,7 @@ class ChopperTune:
             f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
         )
         # Move to the initial position
-        self.gcode.run_script_from_command(
-            "G0 "
-            f"X{self.initial_position.x:0.2f} "
-            f"Y{self.initial_position.y:0.2f} "
-            f"Z{self.initial_position.z:0.2f} "
-            f"F{self.travel_speed}"
-        )
+        self.toolhead.manual_move(self.initial_position, self.travel_speed)
 
         # Clean csv files while going to the initial position
         self.clean_csv_files()
@@ -1785,10 +1764,8 @@ class ChopperTune:
                     f"{max_vibrations_and_speed[0]:0.2f} mm/s"
                 )
 
-        self.gcode.run_script_from_command("G4 P500")
-        self.gcode.run_script_from_command(
-            f"G0 {axis}{a_axis_mid} F{self.travel_speed}"
-        )
+        self.toolhead.dwell(0.5)
+        self.toolhead.manual_move((a_axis_mid,), self.travel_speed)
         self.toolhead.wait_moves()
         if self.search_method != SearchMethod.Adaptive:
             if run_plotter:
