@@ -576,10 +576,7 @@ class ChopperTune:
         self.inset = config.getfloat("inset", 10)
         self.current_change_step = config.getint("current_change_step", 25)
         self.measure_time = config.getint("measure_time", 1250)
-        self.required_rpm = [
-            float(f.strip())
-            for f in config.getlist("required_rpm", [str(v) for v in [37.5, 150, 1.5]])
-        ]
+        self.required_rpm = config.getfloatlist("required_rpm", [37.5, 150, 1.5])
         self.delay = config.getfloat("delay", 500)
         self.fclk = config.getint("fclk", 12)
 
@@ -896,16 +893,16 @@ class ChopperTune:
     def get_current_range(
         self,
         measurement_mode: MeasurementMode,
-        current_min: int | str,
-        current_max: int | str,
+        current_min: None | int,
+        current_max: None | int,
         steppers: list[str],
     ) -> tuple[int, int]:
         """Get run current.
 
         Args:
             measurement_mode (MeasurementMode): The measurement mode.
-            current_min (int | str): The minimum current value.
-            current_max (int | str): The maximum current value.
+            current_min (None | int): The minimum current value.
+            current_max (None | int): The maximum current value.
             steppers (list[str]): The main and secondary stepper.
 
         Returns:
@@ -915,7 +912,7 @@ class ChopperTune:
         run_current = int(
             float(self.driver_settings[steppers[0]].get("run_current")) * 1000
         )
-        if current_min == "default":
+        if current_min is None:
             current_min = run_current
             if self.debug:
                 self.gcode.respond_info(
@@ -924,7 +921,7 @@ class ChopperTune:
         else:
             current_min = int(current_min)
 
-        if current_max == "default":
+        if current_max is None:
             current_max = run_current
             if self.debug:
                 self.gcode.respond_info(
@@ -969,9 +966,9 @@ class ChopperTune:
 
     def configure_speed_limits(
         self,
-        min_speed: float,
-        max_speed: float,
-        speed_change_step: float,
+        min_speed: None | float,
+        max_speed: None | float,
+        speed_change_step: None | float,
         measure_time: float,
         axes: list[str],
         steppers: list[str],
@@ -982,12 +979,10 @@ class ChopperTune:
         """Configure speed limits.
 
         Args:
-            min_speed (float | str): The in speed value, or can be set to
-                "default" to auto calculate the value over the required RPM
-                value.
-            max_speed (float | str): The max speed value, or can be set to
-                "default" to auto calculate the value over the required RPM
-                value.
+            min_speed (float | str): The in speed value, or can be set to None
+                to auto calculate the value over the required RPM value.
+            max_speed (float | str): The max speed value, or can be set to None
+                to auto calculate the value over the required RPM value.
             speed_change_step (float | str): The step in each iteration the
                 speed will be increased to.
             measure_time (float): The measurement time in seconds.
@@ -1023,12 +1018,12 @@ class ChopperTune:
                 / 60  # to convert to mm/s from mm/min
             )
 
-            if min_speed == "default":
+            if min_speed is None:
                 min_speed = float(self.required_rpm[0] * steps_multiplier)
             else:
                 min_speed = float(min_speed)
 
-            if max_speed == "default":
+            if max_speed is None:
                 max_required_speed = float(self.required_rpm[1] * steps_multiplier)
                 max_speed = min(
                     (
@@ -1047,13 +1042,13 @@ class ChopperTune:
             else:
                 max_speed = float(max_speed)
 
-            if speed_change_step == "default":
+            if speed_change_step is None:
                 speed_change_step = self.required_rpm[2] * steps_multiplier
             else:
                 speed_change_step = float(speed_change_step)
         else:
             # Protect not defined speed & converting str -> float
-            if min_speed == "default" or max_speed == "default":
+            if min_speed is None or max_speed is None:
                 raise self.printer.command_error(
                     "WARNING!!! Resonance speed must be defined"
                 )
@@ -1094,8 +1089,8 @@ class ChopperTune:
             max_speed (float): The maximum speed of the main axis.
             acceleration (float): The acceleration of the main axis.
             measure_time (float): The measurement time in seconds.
-            travel_distance (float | str): The travel distance, or can be set
-                to "default" to calculate the travel distance with the
+            travel_distance (None | float): The travel distance, or can be set
+                to None to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
 
         Returns:
@@ -1115,7 +1110,7 @@ class ChopperTune:
             )
 
         # Protect exceeding axis limits & calculate travel distance
-        if travel_distance == "default":
+        if travel_distance is None:
             if a_axis_min + auto_travel_distance > a_axis_max:
                 raise self.printer.command_error(
                     f"WARNING!!! Required travel distance on axis ({axes[0]}) "
@@ -1448,8 +1443,8 @@ class ChopperTune:
     def chopper_tune(
         self,
         axis: str,
-        current_min: int | str = "default",
-        current_max: int | str = "default",
+        current_min: None | int= None,
+        current_max: None | int= None,
         tbl_min: int = 0,
         tbl_max: int = 3,
         toff_min: int = 1,
@@ -1461,11 +1456,11 @@ class ChopperTune:
         hend_max: int = 15,
         tpfd_min: int = -1,
         tpfd_max: int = -1,
-        min_speed: int | str = "default",
-        max_speed: int | str = "default",
-        speed_change_step: int | str = "default",
+        min_speed: None | int = None,
+        max_speed: None | int = None,
+        speed_change_step: None | int = None,
         search_method: SearchMethod = SearchMethod.BruteForce,
-        travel_distance: int | str = "default",
+        travel_distance: None | int = None,
         direction: int = 1,
         accel_chip: str = "default",
         run_plotter: bool = True,
@@ -1474,10 +1469,10 @@ class ChopperTune:
 
         Args:
             axis (str): Axis to tune. Should be one of ["x", "y", "z"].
-            current_min (int | str): Minimum steeper current in mA, or use
-                "default" to set the current to the `run_current` value.
-            current_max (int | str): Maximum steeper current in mA, or use
-                "default" to set the current to the `run_current` value.
+            current_min (None | int): Minimum steeper current in mA, or use
+                None to set the current to the `run_current` value.
+            current_max (None | int): Maximum steeper current in mA, or use
+                None to set the current to the `run_current` value.
             tbl_min (int): The min TBL value.
             tbl_max (int): The max TBL value.
             toff_min (int): The min TOFF value.
@@ -1489,19 +1484,19 @@ class ChopperTune:
             hend_max (int): The max HEND value.
             tpfd_min (int): The min TPFD value.
             tpfd_max (int): The max TPFD value.
-            min_speed (int | str): The in speed value, or can be set to
-                "default" to auto calculate the value over the required RPM
+            min_speed (None | int): The in speed value, or can be set to
+                None to auto calculate the value over the required RPM
                 value.
-            max_speed (int | str): The max speed value, or can be set to
-                "default" to auto calculate the value over the required RPM
+            max_speed (None | int): The max speed value, or can be set to
+                None to auto calculate the value over the required RPM
                 value.
-            speed_change_step (int | str): The step in each iteration the speed
+            speed_change_step (None | int): The step in each iteration the speed
                 will be increased to.
             search_method (SearchMethod): The search method, can be one of
                 [SearchMethod.BruteForce, SearchMethod.Adaptive], default value
                 is SearchMethod.BruteForce.
-            travel_distance (int | str): The travel distance, or can be set to
-                "default" to calculate the travel distance with the
+            travel_distance (None | int): The travel distance, or can be set to
+                None to calculate the travel distance with the
                 `measure_time`, `max_speed` and `accel_decel_distance`.
             direction (int): The movement direction, can be 1 or -1.
                 1 means starting from the minimum position to maximum position,
@@ -2128,37 +2123,29 @@ class ChopperTune:
         """
         try:
             axis = gcmd.get("AXIS", "x").lower()
-            current_min = gcmd.get("CURRENT_MIN_MA", "default").lower()
-            current_max = gcmd.get("CURRENT_MAX_MA", "default").lower()
-            tbl_min = int(gcmd.get("TBL_MIN", 0))
-            tbl_max = int(gcmd.get("TBL_MAX", 3))
-            toff_min = int(gcmd.get("TOFF_MIN", 1))
-            toff_max = int(gcmd.get("TOFF_MAX", 8))
-            hstrt_hend_max = int(gcmd.get("HSTRT_HEND_MAX", 16))
-            hstrt_min = int(gcmd.get("HSTRT_MIN", 0))
-            hstrt_max = int(gcmd.get("HSTRT_MAX", 7))
-            hend_min = int(gcmd.get("HEND_MIN", 2))
-            hend_max = int(gcmd.get("HEND_MAX", 15))
-            tpfd_min = int(gcmd.get("TPFD_MIN", -1))
-            tpfd_max = int(gcmd.get("TPFD_MAX", -1))
-            min_speed = gcmd.get("MIN_SPEED", "default").lower()
+            direction = gcmd.get_int("DIRECTION", 1)
+            # search_method can be brute_force or adaptive
             search_method = SearchMethod.to_method(
                 gcmd.get("SEARCH_METHOD", "brute_force").lower()
             )
-            # search_method can be brute_force or adaptive
-            if IS_DIGIT.match(min_speed):
-                min_speed = float(min_speed)
-            max_speed = gcmd.get("MAX_SPEED", "default").lower()
-            if IS_DIGIT.match(max_speed):
-                min_speed = float(max_speed)
-            speed_change_step = gcmd.get("SPEED_CHANGE_STEP", "default").lower()
-            if IS_DIGIT.match(speed_change_step):
-                speed_change_step = float(speed_change_step)
-            self.iterations = int(gcmd.get("ITERATIONS", 1))
-            direction = int(gcmd.get("DIRECTION", 1))
-            travel_distance = gcmd.get("TRAVEL_DISTANCE", "default").lower()
-            if IS_DIGIT.match(travel_distance):
-                travel_distance = float(travel_distance)
+            current_min = gcmd.get_float("CURRENT_MIN_MA", None)
+            current_max = gcmd.get_float("CURRENT_MAX_MA", None)
+            tbl_min = gcmd.get_int("TBL_MIN", 0)
+            tbl_max = gcmd.get_int("TBL_MAX", 3)
+            toff_min = gcmd.get_int("TOFF_MIN", 1)
+            toff_max = gcmd.get_int("TOFF_MAX", 8)
+            hstrt_hend_max = gcmd.get_int("HSTRT_HEND_MAX", 16)
+            hstrt_min = gcmd.get_int("HSTRT_MIN", 0)
+            hstrt_max = gcmd.get_int("HSTRT_MAX", 7)
+            hend_min = gcmd.get_int("HEND_MIN", 2)
+            hend_max = gcmd.get_int("HEND_MAX", 15)
+            tpfd_min = gcmd.get_int("TPFD_MIN", -1)
+            tpfd_max = gcmd.get_int("TPFD_MAX", -1)
+            min_speed = gcmd.get_float("MIN_SPEED", None)
+            max_speed = gcmd.get_float("MAX_SPEED", None)
+            speed_change_step = gcmd.get_float("SPEED_CHANGE_STEP", None)
+            self.iterations = gcmd.get_int("ITERATIONS", 1)
+            travel_distance = gcmd.get_float("TRAVEL_DISTANCE", None)
             accel_chip = gcmd.get("ACCELEROMETER", "default").lower()
 
             self.measurement_mode = {
