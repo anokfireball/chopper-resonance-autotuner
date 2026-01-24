@@ -254,6 +254,9 @@ class AccelerometerMeasure:
         Returns:
             str: The final destination path of the measurement file.
         """
+        # create the DATA_FOLDER if it doesn't exist
+        os.makedirs(DATA_FOLDER, exist_ok=True)
+
         destination = os.path.join(DATA_FOLDER, self.full_name)
         if os.path.exists(destination):
             os.remove(destination)
