@@ -17,18 +17,11 @@ if [ ! -d "$result_folder" ]; then # Check folder chopper_magnitude & create
     # echo "Make $result_folder direction successfully complete"
 fi
 
-g_shell_path=~/klipper/klippy/extras/
-g_shell_name=gcode_shell_command.py
-# Linking gcode_shell_command.py
-# always force symlink
-ln -sf "$repo_path/extras/$g_shell_name" $g_shell_path
-echo "Linking $g_shell_name to $g_shell_path successfully complete"
-
 chopper_tune_path=~/klipper/klippy/extras/
 chopper_tune_name=chopper_tune.py
 # Linking chopper_tune.py
 # always force symlink
-ln -sf "$repo_path/extras/$chopper_tune_name" $chopper_tune_path
+ln -sf "$repo_path/$chopper_tune_name" $chopper_tune_path
 echo "Linking $chopper_tune_name to $chopper_tune_path successfully complete"
 
 cfg_name=chopper_tune.cfg
@@ -87,13 +80,6 @@ fi
 
 # Install Python dependencies to Klipper
 source ~/klipper-env/bin/activate
-pip install uv
-uv pip install -r $repo_path/requirements.txt
-deactivate
-
-# Create virtual environment and install dependencies
-python3 -m venv $repo_path/.venv
-source $repo_path/.venv/bin/activate
 pip install uv
 uv pip install -r $repo_path/requirements.txt
 deactivate
