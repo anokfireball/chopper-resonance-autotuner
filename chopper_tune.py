@@ -1726,6 +1726,21 @@ class ChopperTune:
                     )
                     total_measured_vibrations += measured_vibrations
                 measured_vibrations = total_measured_vibrations / self.iterations
+
+                freq = self.calculate_frequency(tbl_min, toff_min)
+                sample_name = (
+                    f"current={current_min}_"
+                    f"tbl={tbl_min}_"
+                    f"toff={toff_min}_"
+                    f"hstrt={hstrt_min}_"
+                    f"hend={hend_min}_"
+                    f"tpfd={tpfd_min}_"
+                    f"speed={speed:.2f}_"
+                    f"freq={freq / 1000:.2f}kHz"
+                )
+                self.samples[sample_name] = measured_vibrations
+
+                self.samples
                 speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
