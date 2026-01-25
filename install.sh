@@ -1,4 +1,5 @@
 #!/bin/bash
+maintainer=eoyilmaz
 repo=chopper-resonance-tuner
 
 script_path=$(realpath $(echo $0))
@@ -34,7 +35,7 @@ cfg_name=chopper_tune.cfg
 cfg_path=~/printer_data/config/
 cfg_incl_path=~/printer_data/config/printer.cfg
 
-ln -srf "$repo_path/$cfg_name" $cfg_path # Overwrite
+cp -f "$repo_path/$cfg_name" $cfg_path # Overwrite
 
 # Adding the [include] line to printer.cfg
 if [ -f "$cfg_incl_path" ]; then
@@ -71,7 +72,7 @@ if [ -f "$blk_path" ]; then
           sed -i "\$a [update_manager $repo]" "$blk_path"
           sed -i "\$a type: git_repo" "$blk_path"
           sed -i "\$a path: $repo_path" "$blk_path"
-          sed -i "\$a origin: https://github.com/eoyilmaz/$repo.git" "$blk_path"
+          sed -i "\$a origin: https://github.com/$maintainer/$repo.git" "$blk_path"
           sed -i "\$a primary_branch: main" "$blk_path"
           sed -i "\$a managed_services: klipper" "$blk_path"
           # echo "Including [update_manager] to $blk_path successfully complete"
