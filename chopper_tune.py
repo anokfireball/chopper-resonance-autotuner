@@ -1329,7 +1329,6 @@ class ChopperTune:
         # no need to keep the file so use it from /tmp
         measurement_data_path = accelerometer_measurement.get_full_path()
 
-        self.number_of_samples += 1
         self.number_of_real_samples += 1
 
         return measurement_data_path
@@ -1922,6 +1921,9 @@ class ChopperTune:
                 tpfd,
             )
             total_vibrations += measured_vibrations
+            # update sample count here, and not in execute_vibration_measurement
+            # because some of the samples might be cached
+            self.number_of_samples += 1
 
             self.progress_report()
 
