@@ -219,7 +219,7 @@ class AccelerometerMeasure:
     def __enter__(self) -> Self:
         """Enter to the context."""
         self.gcode.run_script_from_command(
-            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name}"
+            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name} QUIET=1"
         )
         return self
 
@@ -234,7 +234,7 @@ class AccelerometerMeasure:
         Ignore the exceptions, if any, Klipper will handle it.
         """
         self.gcode.run_script_from_command(
-            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name}"
+            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name} QUIET=1"
         )
 
     def wait_for_file_write(self, data_path: str) -> None:
