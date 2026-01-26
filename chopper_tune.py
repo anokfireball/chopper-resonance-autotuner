@@ -11,7 +11,6 @@ This file may be distributed under the terms of the GNU GPLv3 license.
 # Standard Library Imports
 from __future__ import annotations
 
-import csv
 import glob
 import json
 import os
@@ -25,6 +24,8 @@ from typing import TYPE_CHECKING
 
 # Third Party Imports
 import numpy as np
+from scipy import signal
+from scipy.optimize import brute, differential_evolution
 
 
 if TYPE_CHECKING:
@@ -67,6 +68,10 @@ COLORS = [
     "#B51284",
     "#127D0C",
 ]
+SAMPLE_RATE = 3200  # Hz  # TODO: Read from accelerometer config
+CUTOFF_FREQUENCY = 150  # Hz
+NYQUIST_FREQUENCY = SAMPLE_RATE / 2
+NORMAL_CUTOFF = CUTOFF_FREQUENCY / NYQUIST_FREQUENCY
 
 
 class MeasurementMode(IntEnum):
@@ -573,7 +578,7 @@ class ChopperTune:
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
-        self.toolhead : None | ToolHead = None
+        self.toolhead: None | ToolHead = None
         self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
         self.driver_settings = {}
@@ -617,6 +622,7 @@ class ChopperTune:
         self.accel_chip = None
         self.steppers = None
         self.current = None
+        self.static_noise_vector = None
         self.static_noise_magnitude = None
         self.initial_position = None
         self.initial_direction = None
@@ -1405,22 +1411,17 @@ class ChopperTune:
                 acceleration data.
 
         Returns:
-            tuple[float, float, float]: Mean static acceleration values for x,
-                y, z axes.
+            tuple[float, float, float]: Mean static acceleration vector.
         """
         self.wait_for_file_write(data_path)
-        with open(data_path) as file:
-            data = np.array(
-                [
-                    [
-                        float(row["accel_x"]),
-                        float(row["accel_y"]),
-                        float(row["accel_z"]),
-                    ]
-                    for row in csv.DictReader(file)
-                ]
-            )
-        return tuple(float(f) for f in np.mean(data, axis=0))
+        data = np.genfromtxt(data_path, delimiter=",", names=True)
+
+        # Return the mean of each axis as the baseline vector
+        return (
+            float(np.mean(data["accel_x"])),
+            float(np.mean(data["accel_y"])),
+            float(np.mean(data["accel_z"])),
+        )
 
     def calc_magnitude(
         self, data_path: str, static_data: tuple[float, float, float]
@@ -1431,29 +1432,32 @@ class ChopperTune:
             data_path (str): The path to the CSV file containing acceleration
                 data.
             static_data (tuple[float, float, float]): Mean static acceleration
-                values for x, y, z axes.
+                vector.
 
         Returns:
             float: Median magnitude of acceleration data.
         """
         self.wait_for_file_write(data_path)
-        with open(data_path) as file:
-            data = (
-                np.array(
-                    [
-                        [
-                            float(row["accel_x"]),
-                            float(row["accel_y"]),
-                            float(row["accel_z"]),
-                        ]
-                        for row in csv.DictReader(file)
-                    ]
-                )
-                - static_data
-            )
-        trim_size = len(data) // CUTOFF_RANGE
-        data = data[trim_size:-trim_size]
-        return float(np.median(np.linalg.norm(data, axis=1)))
+        raw_csv = np.genfromtxt(data_path, delimiter=",", names=True)
+        accel_x = raw_csv["accel_x"] - static_data[0]
+        accel_y = raw_csv["accel_y"] - static_data[1]
+        accel_z = raw_csv["accel_z"] - static_data[2]
+
+        # data = np.column_stack((raw_csv['accel_x'], raw_csv['accel_y'], raw_csv['accel_z']))
+        # magnitudes = np.linalg.norm(data, axis=1) - static_data
+        magnitudes = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
+
+        # Create a 4th order Butterworth filter
+        b, a = signal.butter(4, NORMAL_CUTOFF, btype="low", analog=False)
+        filtered_magnitudes = signal.filtfilt(b, a, magnitudes)
+
+        # Percentile Trimming (The "Middle 60%")
+        lower_bound = np.percentile(filtered_magnitudes, 20)
+        upper_bound = np.percentile(filtered_magnitudes, 80)
+        trimmed_magnitudes = filtered_magnitudes[
+            (filtered_magnitudes >= lower_bound) & (filtered_magnitudes <= upper_bound)
+        ]
+        return float(np.median(trimmed_magnitudes))
 
     def chopper_tune(
         self,
@@ -1650,7 +1654,14 @@ class ChopperTune:
 
         # Measure accelerometer noise
         static_data_path = self.measure_accelerometer_noise(accel_chip)
-        self.static_noise_magnitude = self.calc_static_magnitude(static_data_path)
+        self.static_noise_vector = self.calc_static_magnitude(static_data_path)
+        self.static_noise_magnitude = float(np.linalg.norm(self.static_noise_vector))
+
+        self.gcode.respond_info(
+            f"Static noise vector    = {self.static_noise_vector} mm/s²\n"
+            f"Static noise magnitude = {self.static_noise_magnitude:.4f} mm/s²\n"
+            "(HINT: this should be close to earths gravity of 9806 mm/s²)"
+        )
 
         # Create the coordinate generator
         coord_generator = CoordGenerator(
@@ -1714,7 +1725,7 @@ class ChopperTune:
                         coord_generator,
                         accel_chip,
                         steppers,
-                        self.static_noise_magnitude,
+                        self.static_noise_vector,
                         iteration,
                         current_min,
                         tbl_min,
@@ -1779,7 +1790,7 @@ class ChopperTune:
         coord_generator: CoordGenerator,
         accel_chip: str,
         steppers: tuple[str, ...],
-        static_noise_magnitude: float,
+        static_noise_vector: tuple[float, float, float],
         iteration: int,
         current: int,
         tbl: int,
@@ -1797,7 +1808,8 @@ class ChopperTune:
             coord_generator (CoordGenerator): The coordinate generator.
             accel_chip (str): Accelerometer chip name, i.e adxl345.
             steppers (list[str]): The main and secondary stepper.
-            static_noise_magnitude (float): The static noise magnitude.
+            static_noise_vector (tuple[float, float, float]): The static noise
+                vector.
             iteration (int): The current iteration number.
             current (int): The current value.
             tbl (int): The TBL value.
@@ -1822,8 +1834,12 @@ class ChopperTune:
         # Dump TMC settings
         for stepper_index in range(self.registers["stepper_count"]):
             stepper_index = str(stepper_index) if stepper_index > 0 else ""
-            self.gcode.run_script_from_command(
-                f"DUMP_TMC STEPPER={steppers[0]}{stepper_index} REGISTER=chopconf"
+            self.gcode.respond_info(
+                " ".join(
+                    f"{r}={v}"
+                    for r, v in self.registers.items()
+                    if r != "stepper_count"
+                )
             )
         freq = self.calculate_frequency(tbl, toff)
         name = (
@@ -1852,7 +1868,7 @@ class ChopperTune:
 
         # measured_vibrations should be used to optimize the inputs with scipy.optimize
         measured_vibrations = self.calc_magnitude(
-            data_path=measurement_data_path, static_data=static_noise_magnitude
+            data_path=measurement_data_path, static_data=static_noise_vector
         )
         os.remove(measurement_data_path)  # no need to keep the file
 
@@ -1911,7 +1927,7 @@ class ChopperTune:
                 self.coord_generator,
                 self.accel_chip,
                 self.steppers,
-                self.static_noise_magnitude,
+                self.static_noise_vector,
                 iteration,
                 current,
                 tbl,
@@ -1921,7 +1937,7 @@ class ChopperTune:
                 tpfd,
             )
             total_vibrations += measured_vibrations
-            # update sample count here, and not in execute_vibration_measurement
+            # update sample count here, and not in execute_vibration_measurement
             # because some of the samples might be cached
             self.number_of_samples += 1
 
@@ -1963,8 +1979,6 @@ class ChopperTune:
         Returns:
             dict: The best parameters found.
         """
-        from scipy.optimize import brute, differential_evolution
-
         self.gcode.respond_info("Starting optimization...")
         start_time = self.reactor.monotonic()
 
@@ -2212,7 +2226,7 @@ class ChopperTune:
         for plot_html_path in plot_html_paths:
             self.gcode.respond_info(f"{plot_html_path}")
 
-    def store_data(self, date_stamp : None | str = None) -> None:
+    def store_data(self, date_stamp: None | str = None) -> None:
         """Store collected sample data to a JSON file.
 
         Args:
