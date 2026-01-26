@@ -40,7 +40,7 @@ And if for some reason not, then install [manually](/wiki/manual_install_en.md).
    2. After the macro is completed, the algorithm will report the speed that
       has the maximum resonances and automatically generate a table of data and
       graphics, place them in the `.../adxl_results/chopper_magnitude/`
-      directory, download and open `interactive_plot_*.html`, and see the
+      directory, download and open `{date}_interactive_plot_*.html`, and see the
       following picture:
 
    ![](/wiki/pictures/img_1.png)
@@ -55,9 +55,6 @@ And if for some reason not, then install [manually](/wiki/manual_install_en.md).
       ```G-code
       CHOPPER_TUNE MIN_SPEED=55 MAX_SPEED=55
       ```
-
-      **Check the availability of free space on the host**, possible `/tmp`
-      folder limit on hosts with 1GB of RAM, about ~700mb is required for data.
 
    The data collection time will take approximately two hours (depending on
    kinematics), after completion we open the graph in the same way as the
@@ -178,13 +175,13 @@ minimum required ones.
 11. `SEARCH_METHOD`
 
    The iteration method to use when looking for the next values for chopper
-   parameters. Defaults to `bruteforce`. Adaptive uses an adaptive optimization
+   parameters. Defaults to `brute_force`. Adaptive uses an adaptive optimization
    algorithm which generally works ~10-20x faster in finding the smallest
-   vibration parameters. Values: `bruteforce / adaptive`.
+   vibration parameters. Values: `brute_force / bruteforce / adaptive`.
 
 12. `RUN_PLOTTER`
 
-   Rrun the graph generation script. Values - `(True / False), (1 / 0)`
+   Run the graph generation script. Values - `(True / False), (1 / 0)`
 
 
 ### About Core XY Printers

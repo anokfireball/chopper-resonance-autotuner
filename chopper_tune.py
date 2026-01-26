@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import csv
 import glob
+import json
 import os
 import re
 import shutil
 import traceback
+from datetime import datetime
 from enum import IntEnum
 from functools import cache, reduce
 from typing import TYPE_CHECKING
 
-# Third Party Imports
+# Third Party Imports
 import numpy as np
 
 
@@ -53,6 +55,18 @@ DATA_FOLDER = os.path.expanduser(
 
 FCLK = 12  # MHz
 CUTOFF_RANGE = 5
+# Graphs generation
+COLORS = [
+    "",
+    "#2F4F4F",
+    "#12B57F",
+    "#9DB512",
+    "#DF8816",
+    "#1297B5",
+    "#5912B5",
+    "#B51284",
+    "#127D0C",
+]
 
 
 class MeasurementMode(IntEnum):
@@ -254,7 +268,7 @@ class AccelerometerMeasure:
         Returns:
             str: The final destination path of the measurement file.
         """
-        # create the DATA_FOLDER if it doesn't exist
+        # create the DATA_FOLDER if it doesn't exist
         os.makedirs(DATA_FOLDER, exist_ok=True)
 
         destination = os.path.join(DATA_FOLDER, self.full_name)
@@ -559,7 +573,7 @@ class ChopperTune:
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
-        self.toolhead = None
+        self.toolhead : None | ToolHead = None
         self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
         self.driver_settings = {}
@@ -588,6 +602,7 @@ class ChopperTune:
         # runtime variables
         self.driver = None
         self.resistor = None
+        self.samples = {}  # store all samples
         self.total_expected_samples = -1  # the expected number of samples
         self.number_of_samples = 0  # current number of samples taken
         self.number_of_real_samples = 0  # current number of real samples taken
@@ -596,7 +611,6 @@ class ChopperTune:
         # Calculated values
         self.search_method = None
         self.measurement_mode = MeasurementMode.Vibrations
-        self.max_speed = None
         self.travel_speed = None
         self.travel_distance = None
         self.coord_generator = None
@@ -622,6 +636,9 @@ class ChopperTune:
         self.hend_max = None
         self.tpfd_min = None
         self.tpfd_max = None
+        self.min_speed = None
+        self.max_speed = None
+        self.speed_change_step = None
 
         self.register_commands()
         self.printer.register_event_handler("klippy:connect", self._connect)
@@ -1309,14 +1326,9 @@ class ChopperTune:
         coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
 
-        if self.search_method == SearchMethod.BruteForce:
-            # move the measurement file to the DATA_FOLDER
-            measurement_data_path = accelerometer_measurement.move()
-        else:
-            # no need to keep the file in adaptive mode so use it from /tmp
-            measurement_data_path = accelerometer_measurement.get_full_path()
+        # no need to keep the file so use it from /tmp
+        measurement_data_path = accelerometer_measurement.get_full_path()
 
-        self.number_of_samples += 1
         self.number_of_real_samples += 1
 
         return measurement_data_path
@@ -1329,7 +1341,7 @@ class ChopperTune:
             toff (int): The TOFF value.
 
         Returns:
-            float: The calculated frequency.
+            float: The calculated frequency in Hz.
         """
         return 1 / (
             2 * (12 + 32 * toff) * 1 / (1000000 * self.fclk)
@@ -1353,7 +1365,7 @@ class ChopperTune:
                 initial_direction = Coord((1, 0, 0))
         elif axes[0] == "y":
             if self.kinematics == "corexy":
-                initial_direction = Coord((1, -1, 0)).unitize()
+                initial_direction = Coord((-1, 1, 0)).unitize()
             else:
                 initial_direction = Coord((0, 1, 0))
         elif axes[0] == "z":
@@ -1446,8 +1458,8 @@ class ChopperTune:
     def chopper_tune(
         self,
         axis: str,
-        current_min: None | int= None,
-        current_max: None | int= None,
+        current_min: None | int = None,
+        current_max: None | int = None,
         tbl_min: int = 0,
         tbl_max: int = 3,
         toff_min: int = 1,
@@ -1647,8 +1659,6 @@ class ChopperTune:
         )
 
         # calculated vars
-        self.speed = min_speed
-        self.max_speed = max_speed
         self.travel_distance = travel_distance
         self.coord_generator = coord_generator
         self.accel_chip = accel_chip
@@ -1656,6 +1666,9 @@ class ChopperTune:
         self.current = current_min
 
         # bounds
+        self.min_speed = min_speed
+        self.max_speed = max_speed
+        self.speed_change_step = speed_change_step
         self.current_min = current_min
         self.current_max = current_max
 
@@ -1684,6 +1697,7 @@ class ChopperTune:
         if self.measurement_mode == MeasurementMode.Vibrations:
             best_parameters = self.search_best_parameters()
         else:
+            # TODO: This section can also be handled by the brute-force search method.
             speed_vs_vibrations = []
             for speed in range(
                 int(min_speed * 100),
@@ -1711,6 +1725,21 @@ class ChopperTune:
                     )
                     total_measured_vibrations += measured_vibrations
                 measured_vibrations = total_measured_vibrations / self.iterations
+
+                freq = self.calculate_frequency(tbl_min, toff_min)
+                sample_name = (
+                    f"current={current_min}_"
+                    f"tbl={tbl_min}_"
+                    f"toff={toff_min}_"
+                    f"hstrt={hstrt_min}_"
+                    f"hend={hend_min}_"
+                    f"tpfd={tpfd_min}_"
+                    f"speed={speed:.2f}_"
+                    f"freq={freq / 1000:.2f}kHz"
+                )
+                self.samples[sample_name] = measured_vibrations
+
+                self.samples
                 speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
@@ -1725,31 +1754,20 @@ class ChopperTune:
         self.toolhead.dwell(0.5)
         self.toolhead.manual_move((a_axis_mid,), self.travel_speed)
         self.toolhead.wait_moves()
-        if self.search_method != SearchMethod.Adaptive:
-            if run_plotter:
-                self.gcode.respond_info("Magnitude graphs generation...")
-                self.gcode.respond_info("This may take a while, please wait")
-                # export data to processing
-                self.gcode.run_script_from_command(
-                    "RUN_SHELL_COMMAND CMD=chop_tune "
-                    f"PARAMS='iterations={self.iterations} "
-                    f"driver={self.driver} "
-                    f"sense_resistor={self.sense_resistor}'"
-                )
-            # output data info
-            self.gcode.respond_info(
-                "To run parser manually; type - "
-                "RUN_SHELL_COMMAND CMD=chop_tune "
-                f"PARAMS='iterations={self.iterations} "
-                f"driver={self.driver} "
-                f"sense_resistor={self.sense_resistor}"
-            )
-        else:
-            # Save best parameters
-            self.save_configs(best_parameters)
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if run_plotter:
+            self.gcode.respond_info("Magnitude graphs generation...")
+            self.gcode.respond_info("This may take a while, please wait")
+            self.plot_data(date_stamp=now)
 
-        # reset number of samples
+        # Store data
+        self.store_data(date_stamp=now)
+
+        # reset samples related data
+        self.total_expected_samples = -1
         self.number_of_samples = 0
+        self.samples = {}
+
         return best_parameters
 
     @cache  # noqa: B019
@@ -1836,8 +1854,7 @@ class ChopperTune:
         measured_vibrations = self.calc_magnitude(
             data_path=measurement_data_path, static_data=static_noise_magnitude
         )
-        if self.search_method == SearchMethod.Adaptive:
-            os.remove(measurement_data_path)  # no need to keep the file
+        os.remove(measurement_data_path)  # no need to keep the file
 
         self.gcode.respond_info(
             f"Measured vibrations: {measured_vibrations:0.2f} mm/s²"
@@ -1853,11 +1870,10 @@ class ChopperTune:
             self.gcode.respond_info(
                 f"Progress: {self.number_of_samples}/"
                 f"{self.total_expected_samples} "
-                f"({percent_complete:0.2f}%) - "
-                f"(reused: {self.number_of_samples - self.number_of_real_samples})"
+                f"({percent_complete:0.1f}%)"
             )
         else:
-            # just report sample statistics
+            # no percentage, as it is adaptive, just show samples taken
             self.gcode.respond_info(
                 f"Samples taken: {self.number_of_samples} "
                 f"(reused: {self.number_of_samples - self.number_of_real_samples})"
@@ -1872,7 +1888,10 @@ class ChopperTune:
         Returns:
             float: The average measured vibrations.
         """
-        current, tbl, toff, hstrt, hend, tpfd = [round(p) for p in params]
+        current, tbl, toff, hstrt, hend, tpfd, speed = [round(p) for p in params]
+
+        # convert speed back to the correct range
+        speed = float(speed) / 100
 
         # penalize hstrt + hend > hstrt_hend_max
         if hstrt + hend > self.hstrt_hend_max:
@@ -1886,7 +1905,7 @@ class ChopperTune:
         total_vibrations = 0
         for iteration in range(self.iterations):
             measured_vibrations = self.execute_vibration_measurement(
-                self.speed,
+                speed,
                 self.max_speed,
                 self.travel_distance,
                 self.coord_generator,
@@ -1902,6 +1921,9 @@ class ChopperTune:
                 tpfd,
             )
             total_vibrations += measured_vibrations
+            # update sample count here, and not in execute_vibration_measurement
+            # because some of the samples might be cached
+            self.number_of_samples += 1
 
             self.progress_report()
 
@@ -1913,6 +1935,19 @@ class ChopperTune:
             self.gcode.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
         # store best result for the last report
         self.best_result = min(self.best_result, total_vibrations)
+
+        freq = self.calculate_frequency(tbl, toff)
+        sample_name = (
+            f"current={current}_"
+            f"tbl={tbl}_"
+            f"toff={toff}_"
+            f"hstrt={hstrt}_"
+            f"hend={hend}_"
+            f"tpfd={tpfd}_"
+            f"speed={speed:.2f}_"
+            f"freq={freq / 1000:.2f}kHz"
+        )
+        self.samples[sample_name] = total_vibrations
 
         # Allow other Klipper tasks to run between iterations
         self.reactor.pause(self.reactor.monotonic() + 0.05)
@@ -1940,6 +1975,7 @@ class ChopperTune:
             "hstrt": -1,
             "hend": -1,
             "tpfd": -1,
+            "speed": -1,
         }
 
         # set initial values
@@ -1963,6 +1999,11 @@ class ChopperTune:
                 slice(self.hstrt_min, self.hstrt_max + 1, 1),
                 slice(self.hend_min, self.hend_max + 1, 1),
                 slice(self.tpfd_min, self.tpfd_max + 1, 1),
+                slice(
+                    int(self.min_speed * 100),
+                    int(self.max_speed * 100) + 1,
+                    int(self.speed_change_step * 100),
+                ),
             ]
 
             # update total expected samples
@@ -1974,6 +2015,9 @@ class ChopperTune:
             total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
             total_hend_steps = self.hend_max - self.hend_min + 1
             total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
+            total_speed_steps = (
+                int(self.max_speed * 100) - int(self.min_speed * 100)
+            ) // int(self.speed_change_step * 100) + 1
             self.total_expected_samples = (
                 total_current_steps
                 * total_tbl_steps
@@ -1982,6 +2026,7 @@ class ChopperTune:
                 * total_hend_steps
                 * total_tpfd_steps
                 * self.iterations
+                * total_speed_steps
             )
 
             result = brute(
@@ -2003,6 +2048,7 @@ class ChopperTune:
                 (self.hstrt_min, self.hstrt_max),
                 (self.hend_min, self.hend_max),
                 (self.tpfd_min, self.tpfd_max),
+                (self.min_speed * 100, self.max_speed * 100),
             ]
 
             result = differential_evolution(
@@ -2029,6 +2075,7 @@ class ChopperTune:
                 "hstrt": best_params[3],
                 "hend": best_params[4],
                 "tpfd": best_params[5],
+                "speed": float(best_params[6]) / 100,
             }
         )
 
@@ -2042,6 +2089,7 @@ class ChopperTune:
             f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
+            f"speed        : {overall_best_params['speed']}\n"
             f"current      : {overall_best_params['current']}\n"
             f"driver_tbl   : {overall_best_params['tbl']}\n"
             f"driver_toff  : {overall_best_params['toff']}\n"
@@ -2103,6 +2151,89 @@ class ChopperTune:
         self.gcode.respond_info(
             "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
         )
+
+    def plot_data(self, date_stamp: None | str = None) -> None:
+        """Plot the collected vibration data.
+
+        Args:
+            date_stamp (None | str): The timestamp string to use in filenames.
+        """
+        import plotly.graph_objects as go
+        import plotly.io as pio
+
+        if date_stamp is None:
+            date_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        params = [
+            reversed(list(self.samples.items())),
+            sorted(self.samples.items(), key=lambda x: x[1]),
+        ]
+        names = ["as_measured", "sorted"]
+        plot_html_paths = []
+        for param, name in zip(params, names):
+            fig = go.Figure()
+            for entry in param:
+                toff = int(entry[0].split("_")[2].split("=")[1])
+                color = COLORS[toff if toff <= 8 else toff - 8]
+                fig.add_trace(
+                    go.Bar(
+                        x=[entry[1]],
+                        y=[entry[0]],
+                        marker_color=color,
+                        orientation="h",
+                        showlegend=False,
+                    )
+                )
+            fig.update_layout(
+                title="Median Magnitude vs Parameters",
+                xaxis_title="Median Magnitude (mm/s²)",
+                yaxis_title="Parameters",
+                coloraxis_showscale=True,
+            )
+            plot_html_path = os.path.join(
+                RESULTS_FOLDER,
+                f"{date_stamp}"
+                f"_interactive_plot_{name}"
+                f"_{self.accel_chip}"
+                f"_tmc{self.driver}"
+                f"_{self.steppers[0]}"
+                f"_{self.sense_resistor}"
+                ".html",
+            )
+            plot_html_paths.append(plot_html_path)
+            pio.write_html(fig, plot_html_path, auto_open=False)
+            speed1 = params[1][0][0].split("_")[6].split("=")[1]
+            speed2 = params[1][1][0].split("_")[6].split("=")[1]
+            if speed1 != speed2:
+                break
+
+        # Export Info
+        self.gcode.respond_info("Access to interactive plot at:")
+        for plot_html_path in plot_html_paths:
+            self.gcode.respond_info(f"{plot_html_path}")
+
+    def store_data(self, date_stamp : None | str = None) -> None:
+        """Store collected sample data to a JSON file.
+
+        Args:
+            date_stamp (None | str): The timestamp string to use in filenames.
+        """
+        if date_stamp is None:
+            date_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        json_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{date_stamp}"
+            f"_sample_data"
+            f"_{self.accel_chip}"
+            f"_tmc{self.driver}"
+            f"_{self.steppers[0]}"
+            f"_{self.sense_resistor}"
+            ".json",
+        )
+        with open(json_path, mode="w") as file:
+            json.dump(self.samples, file, indent=4)
+        self.gcode.respond_info(f"Sample data saved to: {json_path}")
 
     def cmd_chopper_tune(self, gcmd: GCodeCommand) -> bool:
         """Tune stepper values.

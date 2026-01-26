@@ -15,7 +15,7 @@ Our project was created to provide you with guidance on optimizing driver
 parameters for various types of steppers.
 
 ### Currently this tool supports the following kinematics:
-  - CoreXY (support for logical X/Y axis for better stepper motor isolation)
+  - CoreXY (support for logical A/B axis for better stepper motor isolation)
   - H-Bot
   - Cartesian
   - 2/4 WD
