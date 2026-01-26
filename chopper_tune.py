@@ -573,7 +573,7 @@ class ChopperTune:
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
-        self.toolhead = None
+        self.toolhead : None | ToolHead = None
         self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
         self.driver_settings = {}
@@ -1365,7 +1365,7 @@ class ChopperTune:
                 initial_direction = Coord((1, 0, 0))
         elif axes[0] == "y":
             if self.kinematics == "corexy":
-                initial_direction = Coord((1, -1, 0)).unitize()
+                initial_direction = Coord((-1, 1, 0)).unitize()
             else:
                 initial_direction = Coord((0, 1, 0))
         elif axes[0] == "z":
