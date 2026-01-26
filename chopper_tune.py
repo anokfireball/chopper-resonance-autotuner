@@ -15,11 +15,10 @@ import glob
 import json
 import os
 import re
-import shutil
 import traceback
 from datetime import datetime
 from enum import IntEnum
-from functools import cache, reduce
+from functools import reduce
 from typing import TYPE_CHECKING
 
 # Third Party Imports
@@ -27,13 +26,12 @@ import numpy as np
 from scipy import signal
 from scipy.optimize import brute, differential_evolution
 
-
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
 
-    from extras.adxl345 import Accel_Measurement, ADXL345
     from configfile import ConfigWrapper
+    from extras.adxl345 import ADXL345, Accel_Measurement
     from gcode import GCodeCommand, GCodeDispatch
     from klippy import Printer
     from reactor import PollReactor
@@ -69,10 +67,6 @@ COLORS = [
     "#B51284",
     "#127D0C",
 ]
-SAMPLE_RATE = 3200  # Hz  # TODO: Read from accelerometer config
-CUTOFF_FREQUENCY = 150  # Hz
-NYQUIST_FREQUENCY = SAMPLE_RATE / 2
-NORMAL_CUTOFF = CUTOFF_FREQUENCY / NYQUIST_FREQUENCY
 
 
 class MeasurementMode(IntEnum):
@@ -190,7 +184,7 @@ class AccelerometerMeasure:
     ) -> None:
         self.adxl345 = adxl345
         self.bg_client = None
-        self.samples : None | list[Accel_Measurement] = None
+        self.samples: None | list[Accel_Measurement] = None
 
     def __enter__(self) -> Self:
         """Enter to the context."""
@@ -1286,7 +1280,9 @@ class ChopperTune:
                 self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
                 break
 
-    def calc_static_magnitude(self, samples: list[Accel_Measurement]) -> tuple[float, float, float]:
+    def calc_static_magnitude(
+        self, samples: list[Accel_Measurement]
+    ) -> tuple[float, float, float]:
         """Calculate static acceleration data from CSV file.
 
         Args:
@@ -1325,7 +1321,11 @@ class ChopperTune:
         magnitudes = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
 
         # Create a 4th order Butterworth filter
-        b, a = signal.butter(4, NORMAL_CUTOFF, btype="low", analog=False)
+        cutoff_freq = 150  # Hz
+        nyquist_freq = self.adxl345.data_rate / 2
+        normal_cutoff = cutoff_freq / nyquist_freq
+
+        b, a = signal.butter(4, normal_cutoff, btype="low", analog=False)
         filtered_magnitudes = signal.filtfilt(b, a, magnitudes)
 
         # Percentile Trimming (The "Middle 60%")
@@ -1516,7 +1516,7 @@ class ChopperTune:
         self.gcode.run_script_from_command(
             f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
         )
-        # TODO: Use the self.toolhead
+        # TODO: Use the self.toolhead
         # self.toolhead.set_max_velocities(
         #     max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
         # )
@@ -1537,7 +1537,7 @@ class ChopperTune:
         self.gcode.respond_info(
             f"Static noise vector    = {self.static_noise_vector} mm/s²\n"
             f"Static noise magnitude = {self.static_noise_magnitude:.4f} mm/s²\n"
-            "(HINT: this should be close to earths gravity of 9806 mm/s²)"
+            "(HINT: this should be close to earth's gravity of 9806 mm/s²)"
         )
 
         # Create the coordinate generator
@@ -1588,20 +1588,22 @@ class ChopperTune:
             # TODO: This section can also be handled by the brute-force search method.
 
             # Set tbl, toff, hend, and hstrt values
-            self.apply_registers(steppers=self.steppers, field="curr", value=current_min)
-            self.apply_registers(steppers=self.steppers, field="tbl", value=tbl_min)
-            self.apply_registers(steppers=self.steppers, field="toff", value=toff_min)
-            self.apply_registers(steppers=self.steppers, field="hstrt", value=hstrt_min)
-            self.apply_registers(steppers=self.steppers, field="hend", value=hend_min)
-            self.apply_registers(steppers=self.steppers, field="tpfd", value=tpfd_min)
+            self.apply_registers("curr", current_min, self.steppers)
+            self.apply_registers("tbl", tbl_min, self.steppers)
+            self.apply_registers("toff", toff_min, self.steppers)
+            self.apply_registers("hstrt", hstrt_min, self.steppers)
+            self.apply_registers("hend", hend_min, self.steppers)
+            self.apply_registers("tpfd", tpfd_min, self.steppers)
 
             # Dump TMC settings
             self.gcode.respond_info(
-                " ".join(
-                    f"{r}={v}"
-                    for r, v in self.registers.items()
-                    if r != "stepper_count"
-                ) + f" min_speed={min_speed:.0f} max_speed={max_speed:.0f}"
+                f"tbl={tbl_min} "
+                f"toff={toff_min} "
+                f"hstrt={hstrt_min} "
+                f"hend={hend_min} "
+                f"tpfd={tpfd_min} "
+                f"current={current_min} "
+                f"speed={min_speed:.0f} --> {max_speed:.0f}"
             )
 
             speed_vs_vibrations = []
@@ -1663,6 +1665,7 @@ class ChopperTune:
         # reset samples related data
         self.total_expected_samples = -1
         self.number_of_samples = 0
+        self.number_of_real_samples = 0
         self.samples = {}
 
         return best_parameters
@@ -1701,29 +1704,32 @@ class ChopperTune:
         self.toolhead.wait_moves()
 
         samples = self.measure_vibrations(coord_generator, real_travel_distance, speed)
-        magnitude = self.calc_magnitude(
-            samples=samples, static_data=static_noise_vector
-        )
+        return self.calc_magnitude(samples=samples, static_data=static_noise_vector)
 
-        return magnitude
-
-    def progress_report(self, measured_vibrations: float = 0.0) -> None:
+    def progress_report(
+        self, measured_vibrations: float = 0.0, iteration: int = 0
+    ) -> None:
         """Report progress.
 
         Args:
             measured_vibrations (float): The measured vibrations.
+            iteration (int): The current iteration. Only report progress on the
+                first iteration.
         """
-        if self.total_expected_samples > 0:
-            percent_complete = (
-                self.number_of_samples / self.total_expected_samples
-            ) * 100
-            self.gcode.respond_info(
-                f"Progress: {self.number_of_samples}/"
-                f"{self.total_expected_samples} "
-                f"({percent_complete:0.1f}%)"
-            )
+        if iteration == 0:
+            if self.total_expected_samples > 0:
+                percent_complete = (
+                    self.number_of_samples / self.total_expected_samples
+                ) * 100
+                self.gcode.respond_info(
+                    f"Sample         : {self.number_of_samples}/"
+                    f"{self.total_expected_samples} "
+                    f"({percent_complete:0.1f}%)"
+                )
+            else:
+                self.gcode.respond_info(f"Sample         : {self.number_of_samples}")
         self.gcode.respond_info(
-            f"Sample {self.number_of_samples:<8d}: {measured_vibrations:0.1f} mm/s²"
+            f"Iteration {iteration + 1:<5d}: {measured_vibrations:0.1f} mm/s²"
         )
 
     def objective_function(self, params: list[float]) -> float:
@@ -1760,12 +1766,12 @@ class ChopperTune:
             return float("inf")
 
         # Set tbl, toff, hend, and hstrt values
-        self.apply_registers(steppers=self.steppers, field="curr", value=current)
-        self.apply_registers(steppers=self.steppers, field="tbl", value=tbl)
-        self.apply_registers(steppers=self.steppers, field="toff", value=toff)
-        self.apply_registers(steppers=self.steppers, field="hstrt", value=hstrt)
-        self.apply_registers(steppers=self.steppers, field="hend", value=hend)
-        self.apply_registers(steppers=self.steppers, field="tpfd", value=tpfd)
+        self.apply_registers("curr", current, self.steppers)
+        self.apply_registers("tbl", tbl, self.steppers)
+        self.apply_registers("toff", toff, self.steppers)
+        self.apply_registers("hstrt", hstrt, self.steppers)
+        self.apply_registers("hend", hend, self.steppers)
+        self.apply_registers("tpfd", tpfd, self.steppers)
 
         freq = self.calculate_frequency(tbl, toff)
         sample_name = (
@@ -1785,8 +1791,8 @@ class ChopperTune:
             return cached_vibrations
 
         total_vibrations = 0
-        for _ in range(self.iterations):
-            self.number_of_samples += 1
+        self.number_of_samples += 1
+        for iteration in range(self.iterations):
             measured_vibrations = self.execute_vibration_measurement(
                 speed,
                 self.max_speed,
@@ -1795,16 +1801,14 @@ class ChopperTune:
                 self.static_noise_vector,
             )
             total_vibrations += measured_vibrations
-            self.progress_report(measured_vibrations)
+            self.progress_report(measured_vibrations, iteration)
 
             # Allow other Klipper tasks to run between iterations
             self.reactor.pause(self.reactor.monotonic() + 0.05)
 
         total_vibrations /= self.iterations
         if self.iterations > 1:
-            self.gcode.respond_info(
-                f"Mean vibrations: {total_vibrations:0.1f} mm/s²"
-            )
+            self.gcode.respond_info(f"Mean vibrations: {total_vibrations:0.1f} mm/s²")
         # store best result for the last report
         self.best_result = min(self.best_result, total_vibrations)
 
@@ -1884,7 +1888,6 @@ class ChopperTune:
                 * total_hstrt_steps
                 * total_hend_steps
                 * total_tpfd_steps
-                * self.iterations
                 * total_speed_steps
             )
 
