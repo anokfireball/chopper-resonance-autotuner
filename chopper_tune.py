@@ -1140,7 +1140,7 @@ class ChopperTune:
             if a_axis_min + auto_travel_distance > a_axis_max:
                 raise self.printer.command_error(
                     f"WARNING!!! Required travel distance on axis ({axes[0]}) "
-                    f"({auto_travel_distance:.2f} mm) is longer than kinematics "
+                    f"({auto_travel_distance:.1f} mm) is longer than kinematics "
                     "allows, please lower speed or increase acceleration"
                 )
 
@@ -1165,7 +1165,7 @@ class ChopperTune:
                 if a_axis_min + auto_travel_distance > a_axis_max:
                     raise self.printer.command_error(
                         f"WARNING!!! Travel distance on axis ({axes[0]}) "
-                        f"is less than required ({auto_travel_distance:.2f} mm), "
+                        f"is less than required ({auto_travel_distance:.1f} mm), "
                         "and longer than kinematics allows, please lower "
                         "speed or increase acceleration"
                     )
@@ -1220,15 +1220,15 @@ class ChopperTune:
         if self.measurement_mode == MeasurementMode.Resonances:
             # Resonance measurement mode uses the minimum values for registers.
             self.gcode.respond_info(
-                f"Final max travel distance = {travel_distance:.2f} mm, "
-                f"position min = {a_axis_min:.2f}, "
-                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"Final max travel distance = {travel_distance:.1f} mm, "
+                f"position min = {a_axis_min:.1f}, "
+                f"traveling = {a_axis_min:.1f} --> {travel_distance + a_axis_min:.1f}"
             )
             self.gcode.respond_info(
                 f"Start find resonances mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.2f}  --> {max_speed:.2f} mm/s with "
-                f"{speed_change_step:.2f} step\n"
+                f"speed      : {min_speed:.0f}  --> {max_speed:.0f} mm/s with "
+                f"{speed_change_step:.0f} step\n"
                 f"current    : {current_min} mA\n"
                 f"TBL        : {tbl_min}\n"
                 f"TOFF       : {toff_min}\n"
@@ -1237,14 +1237,14 @@ class ChopperTune:
             )
         else:
             self.gcode.respond_info(
-                f"Final travel distance = {travel_distance:.2f} mm, "
-                f"position min = {a_axis_min:.2f}, "
-                f"traveling = {a_axis_min:.2f} --> {travel_distance + a_axis_min:.2f}"
+                f"Final travel distance = {travel_distance:.1f} mm, "
+                f"position min = {a_axis_min:.1f}, "
+                f"traveling = {a_axis_min:.1f} --> {travel_distance + a_axis_min:.1f}"
             )
             self.gcode.respond_info(
                 "Start of register enumeration mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.2f}  --> {max_speed:.2f}  mm/s\n"
+                f"speed      : {min_speed:.0f}  --> {max_speed:.0f}  mm/s\n"
                 f"current    : {current_min} --> {current_max} mA\n"
                 f"iterations : {iterations}\n"
                 f"TBL        : {tbl_min} --> {tbl_max}\n"
@@ -1717,6 +1717,7 @@ class ChopperTune:
             ):
                 speed = speed / 100
                 total_measured_vibrations = 0.0
+                self.gcode.respond_info("-------------------------------")
                 for iteration in range(self.iterations):
                     measured_vibrations = self.execute_vibration_measurement(
                         speed,
@@ -1745,8 +1746,8 @@ class ChopperTune:
                     f"hstrt={hstrt_min}_"
                     f"hend={hend_min}_"
                     f"tpfd={tpfd_min}_"
-                    f"speed={speed:.2f}_"
-                    f"freq={freq / 1000:.2f}kHz"
+                    f"speed={speed:.0f}_"
+                    f"freq={freq / 1000:.1f}kHz"
                 )
                 self.samples[sample_name] = measured_vibrations
 
@@ -1759,7 +1760,7 @@ class ChopperTune:
                 )[-1]
                 self.gcode.respond_info(
                     "Max vibrations seems to be at "
-                    f"{max_vibrations_and_speed[0]:0.2f} mm/s"
+                    f"{max_vibrations_and_speed[0]:0.1f} mm/s"
                 )
 
         self.toolhead.dwell(0.5)
@@ -1839,7 +1840,7 @@ class ChopperTune:
                     f"{r}={v}"
                     for r, v in self.registers.items()
                     if r != "stepper_count"
-                )
+                ) + f" speed={speed:.0f}mm/s"
             )
         freq = self.calculate_frequency(tbl, toff)
         name = (
@@ -1854,7 +1855,7 @@ class ChopperTune:
             # keep the travel duration constant
             real_travel_distance = travel_distance * (speed / max_speed)
             self.gcode.respond_info(
-                f"Speed {speed:0.2f} mm/s on {real_travel_distance:0.2f} mm"
+                f"Speed {speed:.0f} mm/s on {real_travel_distance:0.1f} mm"
             )
         self.toolhead.wait_moves()
 
@@ -1873,7 +1874,7 @@ class ChopperTune:
         os.remove(measurement_data_path)  # no need to keep the file
 
         self.gcode.respond_info(
-            f"Measured vibrations: {measured_vibrations:0.2f} mm/s²"
+            f"Measured vibrations: {measured_vibrations:0.1f} mm/s²"
         )
         return measured_vibrations
 
@@ -1891,8 +1892,7 @@ class ChopperTune:
         else:
             # no percentage, as it is adaptive, just show samples taken
             self.gcode.respond_info(
-                f"Samples taken: {self.number_of_samples} "
-                f"(reused: {self.number_of_samples - self.number_of_real_samples})"
+                f"Sample #: {self.number_of_samples} "
             )
 
     def objective_function(self, params: list[float]) -> float:
@@ -1904,6 +1904,7 @@ class ChopperTune:
         Returns:
             float: The average measured vibrations.
         """
+        self.gcode.respond_info("-------------------------------")
         current, tbl, toff, hstrt, hend, tpfd, speed = [round(p) for p in params]
 
         # convert speed back to the correct range
@@ -1948,7 +1949,9 @@ class ChopperTune:
 
         total_vibrations /= self.iterations
         if self.iterations > 1:
-            self.gcode.respond_info(f"Mean vibrations: {total_vibrations:0.2f} mm/s²")
+            self.gcode.respond_info(
+                f"Mean vibrations    : {total_vibrations:0.1f} mm/s²"
+            )
         # store best result for the last report
         self.best_result = min(self.best_result, total_vibrations)
 
@@ -1960,8 +1963,8 @@ class ChopperTune:
             f"hstrt={hstrt}_"
             f"hend={hend}_"
             f"tpfd={tpfd}_"
-            f"speed={speed:.2f}_"
-            f"freq={freq / 1000:.2f}kHz"
+            f"speed={speed:.0f}_"
+            f"freq={freq / 1000:.1f}kHz"
         )
         self.samples[sample_name] = total_vibrations
 
@@ -2096,11 +2099,10 @@ class ChopperTune:
         duration = self.reactor.monotonic() - start_time
 
         self.gcode.respond_info(
-            f"Optimization Completed in {duration:.2f} seconds!\n"
+            f"Optimization Completed in {duration:.1f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            "reused samples    : "
             f"{self.number_of_samples - self.number_of_real_samples}\n"
-            f"Best Score        : {self.best_result:.2f} mm/s²\n\n"
+            f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
             f"speed        : {overall_best_params['speed']}\n"
