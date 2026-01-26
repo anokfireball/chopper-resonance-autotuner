@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     import sys
     from types import TracebackType
 
+    from extras.adxl345 import Accel_Measurement, ADXL345
     from configfile import ConfigWrapper
     from gcode import GCodeCommand, GCodeDispatch
     from klippy import Printer
@@ -185,42 +186,16 @@ class AccelerometerMeasure:
 
     def __init__(
         self,
-        printer: Printer,
-        gcode: GCodeDispatch,
-        reactor: PollReactor,
-        accel_chip: str,
-        name: str,
+        adxl345: ADXL345,
     ) -> None:
-        self.printer = printer
-        self.gcode = gcode
-        self.reactor = reactor
-        self.accel_chip = accel_chip
-        self.name = name
-
-    @property
-    def full_name(self) -> str:
-        """Return the full name of the measurement file.
-
-        Returns:
-            str: The full name of the measurement file.
-        """
-        return f"{self.accel_chip}-{self.name}.csv"
-
-    @property
-    def full_path(self) -> str:
-        """Return the full path of the measurement file.
-
-        Returns:
-            str: The full path of the measurement file.
-        """
-        # Klipper saves the measurement files in /tmp/
-        return f"/tmp/{self.full_name}"  # noqa: S108
+        self.adxl345 = adxl345
+        self.bg_client = None
+        self.samples : None | list[Accel_Measurement] = None
 
     def __enter__(self) -> Self:
         """Enter to the context."""
-        self.gcode.run_script_from_command(
-            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name} QUIET=1"
-        )
+        if self.bg_client is None:
+            self.bg_client = self.adxl345.start_internal_client()
         return self
 
     def __exit__(
@@ -233,78 +208,9 @@ class AccelerometerMeasure:
 
         Ignore the exceptions, if any, Klipper will handle it.
         """
-        self.gcode.run_script_from_command(
-            f"ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME={self.name} QUIET=1"
-        )
-
-    def wait_for_file_write(self, data_path: str) -> None:
-        """Wait for file write to complete.
-
-        Args:
-            data_path (str): The path to the CSV file.
-        """
-        start_time = self.reactor.monotonic()
-        max_wait_time = 10  # seconds
-        prev_size = -1
-        curr_size = 0
-
-        # while not os.path.exists(data_path) or prev_size != curr_size:
-        while True:
-            curr_size = os.path.getsize(data_path) if os.path.exists(data_path) else 0
-            if curr_size > 0 and curr_size == prev_size:
-                break
-
-            prev_size = curr_size
-
-            # Yield control back to Klipper for 100ms
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-
-            if self.reactor.monotonic() - start_time > max_wait_time:
-                self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
-                break
-
-    def move(self, wait: bool = True) -> str:
-        """Move the measurement file over the DATA_FOLDER.
-
-        Args:
-            wait (bool): If True, wait for file write to complete before
-                moving. Default is True.
-
-        Returns:
-            str: The final destination path of the measurement file.
-        """
-        # create the DATA_FOLDER if it doesn't exist
-        os.makedirs(DATA_FOLDER, exist_ok=True)
-
-        destination = os.path.join(DATA_FOLDER, self.full_name)
-        if os.path.exists(destination):
-            os.remove(destination)
-
-        if wait:
-            self.wait_for_file_write(self.full_path)
-
-        if os.path.exists(self.full_path):
-            shutil.move(self.full_path, destination)
-        else:
-            self.gcode.respond_info(f"File doesn't exist: {self.full_path}")
-
-        return destination
-
-    def get_full_path(self, wait: bool = True) -> str:
-        """Get the data full path.
-
-        Before returning the data path, ensure the file has been written.
-
-        Args:
-            wait (bool): If True, wait for file write to complete before
-                returning the path. Default is True.
-
-        Returns:
-            str: The final destination path of the measurement file.
-        """
-        if wait:
-            self.wait_for_file_write(self.full_path)
-        return self.full_path
+        self.bg_client.finish_measurements()
+        # retrieve data
+        self.samples = self.bg_client.samples or self.bg_client.get_samples()
 
 
 class Coord(list):
@@ -579,6 +485,7 @@ class ChopperTune:
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
         self.toolhead: None | ToolHead = None
+        self.adxl345: None | ADXL345 = None
         self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
         self.driver_settings = {}
@@ -666,6 +573,7 @@ class ChopperTune:
             self.stepper_settings[f"stepper_{axis}"] = self.settings.get(
                 f"stepper_{axis}", {}
             )
+        self.adxl345 = self.printer.lookup_object("adxl345")
 
     def clean_csv_files(self) -> None:
         """Clean temporary data files and exit."""
@@ -822,6 +730,14 @@ class ChopperTune:
                 self.printer.command_error(
                     f"WARNING!!! TMC{driver} don't support register TPFD"
                 )
+
+    def reset_sample_data(self) -> None:
+        """Reset sample data."""
+        self.total_expected_samples = -1
+        self.number_of_samples = 0
+        self.number_of_real_samples = 0
+        self.best_result = 999_999_999
+        self.samples = {}
 
     def reset_registers(self) -> None:
         """Reset registers to default values."""
@@ -1227,7 +1143,7 @@ class ChopperTune:
             self.gcode.respond_info(
                 f"Start find resonances mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.0f}  --> {max_speed:.0f} mm/s with "
+                f"speed      : {min_speed:.0f} --> {max_speed:.0f} mm/s with "
                 f"{speed_change_step:.0f} step\n"
                 f"current    : {current_min} mA\n"
                 f"TBL        : {tbl_min}\n"
@@ -1244,7 +1160,7 @@ class ChopperTune:
             self.gcode.respond_info(
                 "Start of register enumeration mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.0f}  --> {max_speed:.0f}  mm/s\n"
+                f"speed      : {min_speed:.0f} --> {max_speed:.0f} mm/s\n"
                 f"current    : {current_min} --> {current_max} mA\n"
                 f"iterations : {iterations}\n"
                 f"TBL        : {tbl_min} --> {tbl_max}\n"
@@ -1261,47 +1177,26 @@ class ChopperTune:
         self.gcode.run_script_from_command("G28 X Y Z")
         self.toolhead.wait_moves()
 
-    def measure_accelerometer_noise(self, accel_chip: str) -> str:
-        """Measure accelerometer noise.
+    def get_standing_acceleration(self) -> list[Accel_Measurement]:
+        """Get standing accelerometer samples.
 
-        Args:
-            accel_chip (str): Accelerometer chip name, i.e adxl345.
+        This will help removing the effect of gravity + static vibrations from
+        real vibration data.
 
         Returns:
-            str: The measurement data file path.
+            list[Accel_Measurement]: The measurement data samples.
         """
-        start_time = self.reactor.monotonic()
         self.toolhead.wait_moves()
-        with AccelerometerMeasure(
-            printer=self.printer,
-            gcode=self.gcode,
-            reactor=self.reactor,
-            accel_chip=accel_chip,
-            name="stand_still",
-        ) as accelerometer_measurement:
+        with AccelerometerMeasure(self.adxl345) as accelerometer_measurement:
             self.toolhead.dwell(5.0)
-        if self.search_method == SearchMethod.BruteForce:
-            # move the measurement file to the DATA_FOLDER
-            measurement_data_path = accelerometer_measurement.move()
-        else:
-            # no need to keep the file in adaptive mode so use it from /tmp
-            measurement_data_path = accelerometer_measurement.get_full_path()
-        self.gcode.respond_info(f"Noise Data: {measurement_data_path}")
-        if self.debug:
-            duration = self.reactor.monotonic() - start_time
-            self.gcode.respond_info(
-                f"AccelerometerMeasure took {duration:0.1f} seconds"
-            )
-        return measurement_data_path
+        return accelerometer_measurement.samples
 
     def measure_vibrations(
         self,
         coord_generator: CoordGenerator,
         travel_distance: float,
         speed: float,
-        accel_chip: str,
-        name: str,
-    ) -> str:
+    ) -> list[Accel_Measurement]:
         """Perform vibration measurement.
 
         Args:
@@ -1312,17 +1207,10 @@ class ChopperTune:
             name (str): The name of the measurement.
 
         Returns:
-            str: The measurement data file path.
+            list[Accel_Measurement]: The measurement data samples.
         """
         # Start accel_chip data collection
-        with AccelerometerMeasure(
-            printer=self.printer,
-            gcode=self.gcode,
-            reactor=self.reactor,
-            accel_chip=accel_chip,
-            name=name,
-        ) as accelerometer_measurement:
-            # go in both directions at once
+        with AccelerometerMeasure(adxl345=self.adxl345) as accelerometer_measurement:
             next_coord = coord_generator.next(travel_distance)
             self.toolhead.manual_move(next_coord, speed)
         # Move to the initial position
@@ -1331,13 +1219,8 @@ class ChopperTune:
         coord_generator.current_coord.y = self.initial_position.y
         coord_generator.current_coord.z = self.initial_position.z
         self.toolhead.wait_moves()
-
-        # no need to keep the file so use it from /tmp
-        measurement_data_path = accelerometer_measurement.get_full_path()
-
         self.number_of_real_samples += 1
-
-        return measurement_data_path
+        return accelerometer_measurement.samples
 
     def calculate_frequency(self, tbl: int, toff: int) -> float:
         """Calculate frequency based on TBL and TOFF values.
@@ -1403,48 +1286,42 @@ class ChopperTune:
                 self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
                 break
 
-    def calc_static_magnitude(self, data_path: str) -> tuple[float, float, float]:
+    def calc_static_magnitude(self, samples: list[Accel_Measurement]) -> tuple[float, float, float]:
         """Calculate static acceleration data from CSV file.
 
         Args:
-            data_path (str): The path to the CSV file containing static
-                acceleration data.
+            samples (list[Accel_Measurement]): The list of acceleration data samples.
 
         Returns:
             tuple[float, float, float]: Mean static acceleration vector.
         """
-        self.wait_for_file_write(data_path)
-        data = np.genfromtxt(data_path, delimiter=",", names=True)
-
+        accel_x = np.array([sample.accel_x for sample in samples])
+        accel_y = np.array([sample.accel_y for sample in samples])
+        accel_z = np.array([sample.accel_z for sample in samples])
         # Return the mean of each axis as the baseline vector
         return (
-            float(np.mean(data["accel_x"])),
-            float(np.mean(data["accel_y"])),
-            float(np.mean(data["accel_z"])),
+            float(np.mean(accel_x)),
+            float(np.mean(accel_y)),
+            float(np.mean(accel_z)),
         )
 
     def calc_magnitude(
-        self, data_path: str, static_data: tuple[float, float, float]
+        self, samples: list[Accel_Measurement], static_data: tuple[float, float, float]
     ) -> float:
         """Calculate median magnitude of acceleration data from CSV file.
 
         Args:
-            data_path (str): The path to the CSV file containing acceleration
-                data.
+            samples (list[Accel_Measurement]): The list of acceleration data samples.
             static_data (tuple[float, float, float]): Mean static acceleration
                 vector.
 
         Returns:
             float: Median magnitude of acceleration data.
         """
-        self.wait_for_file_write(data_path)
-        raw_csv = np.genfromtxt(data_path, delimiter=",", names=True)
-        accel_x = raw_csv["accel_x"] - static_data[0]
-        accel_y = raw_csv["accel_y"] - static_data[1]
-        accel_z = raw_csv["accel_z"] - static_data[2]
+        accel_x = np.array([sample.accel_x for sample in samples]) - static_data[0]
+        accel_y = np.array([sample.accel_y for sample in samples]) - static_data[1]
+        accel_z = np.array([sample.accel_z for sample in samples]) - static_data[2]
 
-        # data = np.column_stack((raw_csv['accel_x'], raw_csv['accel_y'], raw_csv['accel_z']))
-        # magnitudes = np.linalg.norm(data, axis=1) - static_data
         magnitudes = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
 
         # Create a 4th order Butterworth filter
@@ -1529,11 +1406,8 @@ class ChopperTune:
                 done using the adaptive method.
         """
         # reset previous run data
-        self.total_expected_samples = -1
-        self.number_of_samples = 0
-        self.number_of_real_samples = 0
-        self.best_result = 999_999_999
-        self.execute_vibration_measurement.cache_clear()
+        self.reset_sample_data()
+        self.reset_registers()
 
         self.search_method = search_method
 
@@ -1544,7 +1418,6 @@ class ChopperTune:
         self.gcode.respond_info(f"Selected {self.search_method} as search method")
 
         measure_time = self.measure_time / 1000
-        self.reset_registers()
         # Find the steppers count of the main axis
         self.registers["stepper_count"] = self.get_stepper_count(axis)
 
@@ -1643,6 +1516,10 @@ class ChopperTune:
         self.gcode.run_script_from_command(
             f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
         )
+        # TODO: Use the self.toolhead
+        # self.toolhead.set_max_velocities(
+        #     max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
+        # )
         # Move to the initial position
         self.toolhead.manual_move(self.initial_position, self.travel_speed)
 
@@ -1653,8 +1530,8 @@ class ChopperTune:
         self.toolhead.wait_moves()
 
         # Measure accelerometer noise
-        static_data_path = self.measure_accelerometer_noise(accel_chip)
-        self.static_noise_vector = self.calc_static_magnitude(static_data_path)
+        samples = self.get_standing_acceleration()
+        self.static_noise_vector = self.calc_static_magnitude(samples)
         self.static_noise_magnitude = float(np.linalg.norm(self.static_noise_vector))
 
         self.gcode.respond_info(
@@ -1709,6 +1586,24 @@ class ChopperTune:
             best_parameters = self.search_best_parameters()
         else:
             # TODO: This section can also be handled by the brute-force search method.
+
+            # Set tbl, toff, hend, and hstrt values
+            self.apply_registers(steppers=self.steppers, field="curr", value=current_min)
+            self.apply_registers(steppers=self.steppers, field="tbl", value=tbl_min)
+            self.apply_registers(steppers=self.steppers, field="toff", value=toff_min)
+            self.apply_registers(steppers=self.steppers, field="hstrt", value=hstrt_min)
+            self.apply_registers(steppers=self.steppers, field="hend", value=hend_min)
+            self.apply_registers(steppers=self.steppers, field="tpfd", value=tpfd_min)
+
+            # Dump TMC settings
+            self.gcode.respond_info(
+                " ".join(
+                    f"{r}={v}"
+                    for r, v in self.registers.items()
+                    if r != "stepper_count"
+                ) + f" min_speed={min_speed:.0f} max_speed={max_speed:.0f}"
+            )
+
             speed_vs_vibrations = []
             for speed in range(
                 int(min_speed * 100),
@@ -1718,22 +1613,13 @@ class ChopperTune:
                 speed = speed / 100
                 total_measured_vibrations = 0.0
                 self.gcode.respond_info("-------------------------------")
-                for iteration in range(self.iterations):
+                for _ in range(self.iterations):
                     measured_vibrations = self.execute_vibration_measurement(
                         speed,
                         max_speed,
                         travel_distance,
                         coord_generator,
-                        accel_chip,
-                        steppers,
                         self.static_noise_vector,
-                        iteration,
-                        current_min,
-                        tbl_min,
-                        toff_min,
-                        hstrt_min,
-                        hend_min,
-                        tpfd_min,
                     )
                     total_measured_vibrations += measured_vibrations
                 measured_vibrations = total_measured_vibrations / self.iterations
@@ -1751,7 +1637,6 @@ class ChopperTune:
                 )
                 self.samples[sample_name] = measured_vibrations
 
-                self.samples
                 speed_vs_vibrations.append((speed, measured_vibrations))
 
             if self.measurement_mode == MeasurementMode.Resonances:
@@ -1782,23 +1667,13 @@ class ChopperTune:
 
         return best_parameters
 
-    @cache  # noqa: B019
     def execute_vibration_measurement(
         self,
         speed: float,
         max_speed: float,
         travel_distance: float,
         coord_generator: CoordGenerator,
-        accel_chip: str,
-        steppers: tuple[str, ...],
         static_noise_vector: tuple[float, float, float],
-        iteration: int,
-        current: int,
-        tbl: int,
-        toff: int,
-        hstrt: int,
-        hend: int,
-        tpfd: int,
     ) -> float:
         """Execute a single vibration measurement.
 
@@ -1811,44 +1686,10 @@ class ChopperTune:
             steppers (list[str]): The main and secondary stepper.
             static_noise_vector (tuple[float, float, float]): The static noise
                 vector.
-            iteration (int): The current iteration number.
-            current (int): The current value.
-            tbl (int): The TBL value.
-            toff (int): The TOFF value.
-            hstrt (int): The HSTRT value.
-            hend (int): The HEND value.
-            tpfd (int): The TPFD value.
 
         Returns:
             float: The measured vibrations.
         """
-        # Set tbl values
-        # Set toff values
-        # Set hend, and hstrt values
-        self.apply_registers(steppers=steppers, field="curr", value=current)
-        self.apply_registers(steppers=steppers, field="tbl", value=tbl)
-        self.apply_registers(steppers=steppers, field="toff", value=toff)
-        self.apply_registers(steppers=steppers, field="hend", value=hend)
-        self.apply_registers(steppers=steppers, field="hstrt", value=hstrt)
-        self.apply_registers(steppers=steppers, field="tpfd", value=tpfd)
-
-        # Dump TMC settings
-        for stepper_index in range(self.registers["stepper_count"]):
-            stepper_index = str(stepper_index) if stepper_index > 0 else ""
-            self.gcode.respond_info(
-                " ".join(
-                    f"{r}={v}"
-                    for r, v in self.registers.items()
-                    if r != "stepper_count"
-                ) + f" speed={speed:.0f}"
-            )
-        freq = self.calculate_frequency(tbl, toff)
-        name = (
-            f"__{current}_{tbl}_{toff}_{hstrt}_"
-            f"{hend}_{tpfd}_{speed * 100:.0f}_"
-            f"{freq:.0f}_{iteration + 1}__"
-        )
-
         real_travel_distance = travel_distance
         if self.measurement_mode == MeasurementMode.Resonances:
             # when finding resonances,
@@ -1859,27 +1700,19 @@ class ChopperTune:
             )
         self.toolhead.wait_moves()
 
-        measurement_data_path = self.measure_vibrations(
-            coord_generator,
-            real_travel_distance,
-            speed,
-            accel_chip,
-            name,
+        samples = self.measure_vibrations(coord_generator, real_travel_distance, speed)
+        magnitude = self.calc_magnitude(
+            samples=samples, static_data=static_noise_vector
         )
 
-        # measured_vibrations should be used to optimize the inputs with scipy.optimize
-        measured_vibrations = self.calc_magnitude(
-            data_path=measurement_data_path, static_data=static_noise_vector
-        )
-        os.remove(measurement_data_path)  # no need to keep the file
+        return magnitude
 
-        self.gcode.respond_info(
-            f"Measured vibrations: {measured_vibrations:0.1f} mm/s²"
-        )
-        return measured_vibrations
+    def progress_report(self, measured_vibrations: float = 0.0) -> None:
+        """Report progress.
 
-    def progress_report(self) -> None:
-        """Report progress."""
+        Args:
+            measured_vibrations (float): The measured vibrations.
+        """
         if self.total_expected_samples > 0:
             percent_complete = (
                 self.number_of_samples / self.total_expected_samples
@@ -1889,11 +1722,9 @@ class ChopperTune:
                 f"{self.total_expected_samples} "
                 f"({percent_complete:0.1f}%)"
             )
-        else:
-            # no percentage, as it is adaptive, just show samples taken
-            self.gcode.respond_info(
-                f"Sample #: {self.number_of_samples} "
-            )
+        self.gcode.respond_info(
+            f"Sample {self.number_of_samples:<8d}: {measured_vibrations:0.1f} mm/s²"
+        )
 
     def objective_function(self, params: list[float]) -> float:
         """Objective function for optimization.
@@ -1910,50 +1741,31 @@ class ChopperTune:
         # convert speed back to the correct range
         speed = float(speed) / 100
 
+        # Dump TMC settings
+        self.gcode.respond_info(
+            f"tbl={tbl} "
+            f"toff={toff} "
+            f"hstrt={hstrt} "
+            f"hend={hend} "
+            f"tpfd={tpfd} "
+            f"current={current} "
+            f"speed={speed:.0f}"
+        )
+
         # penalize hstrt + hend > hstrt_hend_max
         if hstrt + hend > self.hstrt_hend_max:
             self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
             )
-            self.number_of_samples += 1  # consider this as a sample
-            self.progress_report()
             return float("inf")
 
-        total_vibrations = 0
-        for iteration in range(self.iterations):
-            measured_vibrations = self.execute_vibration_measurement(
-                speed,
-                self.max_speed,
-                self.travel_distance,
-                self.coord_generator,
-                self.accel_chip,
-                self.steppers,
-                self.static_noise_vector,
-                iteration,
-                current,
-                tbl,
-                toff,
-                hstrt,
-                hend,
-                tpfd,
-            )
-            total_vibrations += measured_vibrations
-            # update sample count here, and not in execute_vibration_measurement
-            # because some of the samples might be cached
-            self.number_of_samples += 1
-
-            self.progress_report()
-
-            # Allow other Klipper tasks to run between iterations
-            self.reactor.pause(self.reactor.monotonic() + 0.05)
-
-        total_vibrations /= self.iterations
-        if self.iterations > 1:
-            self.gcode.respond_info(
-                f"Mean vibrations    : {total_vibrations:0.1f} mm/s²"
-            )
-        # store best result for the last report
-        self.best_result = min(self.best_result, total_vibrations)
+        # Set tbl, toff, hend, and hstrt values
+        self.apply_registers(steppers=self.steppers, field="curr", value=current)
+        self.apply_registers(steppers=self.steppers, field="tbl", value=tbl)
+        self.apply_registers(steppers=self.steppers, field="toff", value=toff)
+        self.apply_registers(steppers=self.steppers, field="hstrt", value=hstrt)
+        self.apply_registers(steppers=self.steppers, field="hend", value=hend)
+        self.apply_registers(steppers=self.steppers, field="tpfd", value=tpfd)
 
         freq = self.calculate_frequency(tbl, toff)
         sample_name = (
@@ -1966,6 +1778,36 @@ class ChopperTune:
             f"speed={speed:.0f}_"
             f"freq={freq / 1000:.1f}kHz"
         )
+        if sample_name in self.samples:
+            cached_vibrations = self.samples[sample_name]
+            self.number_of_samples += 1  # consider this as a sample
+            self.progress_report(cached_vibrations)
+            return cached_vibrations
+
+        total_vibrations = 0
+        for _ in range(self.iterations):
+            self.number_of_samples += 1
+            measured_vibrations = self.execute_vibration_measurement(
+                speed,
+                self.max_speed,
+                self.travel_distance,
+                self.coord_generator,
+                self.static_noise_vector,
+            )
+            total_vibrations += measured_vibrations
+            self.progress_report(measured_vibrations)
+
+            # Allow other Klipper tasks to run between iterations
+            self.reactor.pause(self.reactor.monotonic() + 0.05)
+
+        total_vibrations /= self.iterations
+        if self.iterations > 1:
+            self.gcode.respond_info(
+                f"Mean vibrations: {total_vibrations:0.1f} mm/s²"
+            )
+        # store best result for the last report
+        self.best_result = min(self.best_result, total_vibrations)
+
         self.samples[sample_name] = total_vibrations
 
         # Allow other Klipper tasks to run between iterations
@@ -2101,7 +1943,6 @@ class ChopperTune:
         self.gcode.respond_info(
             f"Optimization Completed in {duration:.1f} seconds!\n"
             f"Number of samples : {self.number_of_samples}\n"
-            f"{self.number_of_samples - self.number_of_real_samples}\n"
             f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
@@ -2134,9 +1975,6 @@ class ChopperTune:
         self.apply_registers(
             steppers=self.steppers, field="tpfd", value=overall_best_params["tpfd"]
         )
-
-        # clear the cache for the next runs
-        self.execute_vibration_measurement.cache_clear()
 
         return overall_best_params
 
