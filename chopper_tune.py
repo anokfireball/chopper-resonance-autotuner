@@ -1840,7 +1840,7 @@ class ChopperTune:
                     f"{r}={v}"
                     for r, v in self.registers.items()
                     if r != "stepper_count"
-                ) + f" speed={speed:.0f}mm/s"
+                ) + f" speed={speed:.0f}"
             )
         freq = self.calculate_frequency(tbl, toff)
         name = (
