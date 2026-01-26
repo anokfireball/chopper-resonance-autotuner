@@ -79,7 +79,7 @@ if [ -f "$blk_path" ]; then
 fi
 
 # Install Python dependencies to Klipper
-source ~/klipper-env/bin/activate
+source ~/klippy-env/bin/activate
 pip install uv
 uv pip install -r $repo_path/requirements.txt
 deactivate
