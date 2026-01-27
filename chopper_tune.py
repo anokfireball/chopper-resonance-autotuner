@@ -1162,8 +1162,6 @@ class ChopperTune:
 
     def home(self) -> None:
         """Home."""
-        # event_time = self.printer.get_reactor().monotonic()
-        # if "xyz" not in self.toolhead.get_status(event_time)["homed_axes"]:
         self.gcode.run_script_from_command("G28 X Y Z")
         self.toolhead.wait_moves()
 
@@ -1503,23 +1501,11 @@ class ChopperTune:
         if direction == -1:
             self.initial_direction = self.initial_direction * -1
 
-        # if this is not running in "find resonances" mode,
+        self.toolhead.set_max_velocities(None, acceleration, None, None)
+
         # move away from the middle exactly half or a travel distance
-        # if measurement_mode == MeasurementMode.Vibrations:
         self.initial_position -= self.initial_direction * (travel_distance / 2)
-
-        self.gcode.run_script_from_command(f"SET_VELOCITY_LIMIT ACCEL={acceleration}")
-        self.gcode.run_script_from_command(
-            f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
-        )
-        # TODO: Use the self.toolhead
-        # self.toolhead.set_max_velocities(
-        #     max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
-        # )
-        # Move to the initial position
         self.toolhead.manual_move(self.initial_position, self.travel_speed)
-
-        # Wait for move to complete
         self.toolhead.wait_moves()
 
         # Measure accelerometer noise
@@ -1530,9 +1516,10 @@ class ChopperTune:
         # set the global start time here
         self.global_start_time = self.reactor.monotonic()
 
+        nv = self.static_noise_vector
         self.gcode.respond_info(
-            f"Static noise vector    = {self.static_noise_vector} mm/s²\n"
-            f"Static noise magnitude = {self.static_noise_magnitude:.4f} mm/s²\n"
+            f"Static noise vector    = {nv[0]:0.1f} {nv[1]:0.1f} {nv[2]:0.1f} mm/s²\n"
+            f"Static noise magnitude = {self.static_noise_magnitude:.1f} mm/s²\n"
             "(HINT: this should be close to earth's gravity of 9806 mm/s²)"
         )
 
@@ -2243,6 +2230,18 @@ class ChopperTune:
 
 
 def load_config(config: ConfigWrapper) -> ChopperTune:
+    """Load the ChopperTune config prefix.
+
+    Args:
+        config (ConfigWrapper): The config wrapper.
+
+    Returns:
+        ChopperTune: The ChopperTune instance.
+    """
+    return ChopperTune(config)
+
+
+def load_config_prefix(config: ConfigWrapper) -> ChopperTune:
     """Load the ChopperTune config prefix.
 
     Args:
