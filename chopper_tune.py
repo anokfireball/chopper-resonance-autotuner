@@ -11,7 +11,6 @@ This file may be distributed under the terms of the GNU GPLv3 license.
 # Standard Library Imports
 from __future__ import annotations
 
-import glob
 import json
 import os
 import re
@@ -513,6 +512,7 @@ class ChopperTune:
         self.number_of_samples = 0  # current number of samples taken
         self.number_of_real_samples = 0  # current number of real samples taken
         self.best_result = 999_999_999  # store the best result
+        self.global_start_time = 0  # store the global start time
 
         # Calculated values
         self.search_method = None
@@ -568,11 +568,6 @@ class ChopperTune:
                 f"stepper_{axis}", {}
             )
         self.adxl345 = self.printer.lookup_object("adxl345")
-
-    def clean_csv_files(self) -> None:
-        """Clean temporary data files and exit."""
-        for f in glob.glob(os.path.join(DATA_FOLDER, "*.csv")):
-            os.remove(f)
 
     def detect_driver(self, stepper: str) -> None | tuple[str, str]:
         """Detect the driver of the selected stepper.
@@ -732,6 +727,7 @@ class ChopperTune:
         self.number_of_real_samples = 0
         self.best_result = 999_999_999
         self.samples = {}
+        self.global_start_time = 0
 
     def reset_registers(self) -> None:
         """Reset registers to default values."""
@@ -1523,9 +1519,6 @@ class ChopperTune:
         # Move to the initial position
         self.toolhead.manual_move(self.initial_position, self.travel_speed)
 
-        # Clean csv files while going to the initial position
-        self.clean_csv_files()
-
         # Wait for move to complete
         self.toolhead.wait_moves()
 
@@ -1533,6 +1526,9 @@ class ChopperTune:
         samples = self.get_standing_acceleration()
         self.static_noise_vector = self.calc_static_magnitude(samples)
         self.static_noise_magnitude = float(np.linalg.norm(self.static_noise_vector))
+
+        # set the global start time here
+        self.global_start_time = self.reactor.monotonic()
 
         self.gcode.respond_info(
             f"Static noise vector    = {self.static_noise_vector} mm/s²\n"
@@ -1646,6 +1642,8 @@ class ChopperTune:
                     speed_vs_vibrations, key=lambda x: x[1]
                 )[-1]
                 self.gcode.respond_info(
+                    "Finding resonances took "
+                    f"{self.convert_seconds_to_hms(self.get_time_elapsed())}\n"
                     "Max vibrations seems to be at "
                     f"{max_vibrations_and_speed[0]:0.1f} mm/s"
                 )
@@ -1706,6 +1704,45 @@ class ChopperTune:
         samples = self.measure_vibrations(coord_generator, real_travel_distance, speed)
         return self.calc_magnitude(samples=samples, static_data=static_noise_vector)
 
+    def get_time_elapsed(self) -> float:
+        """Get elapsed time since the start of the process.
+
+        Returns:
+            float: The time elapsed in seconds.
+        """
+        return self.reactor.monotonic() - self.global_start_time
+
+    def get_remaining_time(self) -> float:
+        """Estimate remaining time for the process.
+
+        Returns:
+            float: The estimated remaining time in seconds.
+        """
+        time_passed = self.get_time_elapsed()
+        total_estimated_process_time = (
+            time_passed / self.number_of_samples * self.total_expected_samples
+        )
+        return max(total_estimated_process_time - time_passed, 0)
+
+    def convert_seconds_to_hms(self, seconds: float) -> str:
+        """Convert seconds to hours, minutes, and seconds.
+
+        Args:
+            seconds (float): The time in seconds.
+
+        Returns:
+            str: The time in "HHh MMm SSs" format.
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+
+        # do not include hours or minutes if zero
+        hours_str = f"{hours}h" if hours > 0 else ""
+        minutes_str = f"{minutes}m" if minutes > 0 or hours > 0 else ""
+
+        return f"{hours_str}{minutes_str}{secs}s"
+
     def progress_report(
         self, measured_vibrations: float = 0.0, iteration: int = 0
     ) -> None:
@@ -1724,10 +1761,15 @@ class ChopperTune:
                 self.gcode.respond_info(
                     f"Sample         : {self.number_of_samples}/"
                     f"{self.total_expected_samples} "
-                    f"({percent_complete:0.1f}%)"
+                    f"({percent_complete:0.1f}%) | "
+                    f"E: {self.convert_seconds_to_hms(self.get_time_elapsed())} | "
+                    f"R: {self.convert_seconds_to_hms(self.get_remaining_time())}"
                 )
             else:
-                self.gcode.respond_info(f"Sample         : {self.number_of_samples}")
+                self.gcode.respond_info(
+                    f"Sample         : {self.number_of_samples} | "
+                    f"E: {self.convert_seconds_to_hms(self.get_time_elapsed())}"
+                )
         self.gcode.respond_info(
             f"Iteration {iteration + 1:<5d}: {measured_vibrations:0.1f} mm/s²"
         )
@@ -1763,6 +1805,7 @@ class ChopperTune:
             self.gcode.respond_info(
                 f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
             )
+            self.number_of_samples += 1  # consider this as a sample
             return float("inf")
 
         # Set tbl, toff, hend, and hstrt values
@@ -1913,6 +1956,7 @@ class ChopperTune:
                 (self.min_speed * 100, self.max_speed * 100),
             ]
 
+            self.total_expected_samples = 10 * 5 * len(partial_bounds)
             result = differential_evolution(
                 self.objective_function,
                 partial_bounds,
@@ -1944,7 +1988,7 @@ class ChopperTune:
         duration = self.reactor.monotonic() - start_time
 
         self.gcode.respond_info(
-            f"Optimization Completed in {duration:.1f} seconds!\n"
+            f"Optimization Completed in {self.convert_seconds_to_hms(duration)}\n"
             f"Number of samples : {self.number_of_samples}\n"
             f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
             "Parameters\n"
