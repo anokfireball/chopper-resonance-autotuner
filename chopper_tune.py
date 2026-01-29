@@ -512,6 +512,7 @@ class ChopperTune:
         self.number_of_samples = 0  # current number of samples taken
         self.number_of_real_samples = 0  # current number of real samples taken
         self.best_result = 999_999_999  # store the best result
+        self.speed_vs_vibrations = []  # store speed vs vibrations
         self.global_start_time = 0  # store the global start time
 
         # Calculated values
@@ -727,6 +728,7 @@ class ChopperTune:
         self.number_of_real_samples = 0
         self.best_result = 999_999_999
         self.samples = {}
+        self.speed_vs_vibrations = []
         self.global_start_time = 0
 
     def reset_registers(self) -> None:
@@ -1565,69 +1567,17 @@ class ChopperTune:
             (self.hend_min, self.hend_max),
             (self.tpfd_min, self.tpfd_max),
         ]
-        best_parameters = None
-
-        if self.measurement_mode == MeasurementMode.Vibrations:
-            best_parameters = self.search_best_parameters()
-        else:
-            # TODO: This section can also be handled by the brute-force search method.
-
-            # Set tbl, toff, hend, and hstrt values
-            self.apply_registers("curr", current_min, self.steppers)
-            self.apply_registers("tbl", tbl_min, self.steppers)
-            self.apply_registers("toff", toff_min, self.steppers)
-            self.apply_registers("hstrt", hstrt_min, self.steppers)
-            self.apply_registers("hend", hend_min, self.steppers)
-            self.apply_registers("tpfd", tpfd_min, self.steppers)
-
-            # Dump TMC settings
+        best_parameters = self.search_best_parameters()
+        if self.measurement_mode == MeasurementMode.Resonances:
+            max_vibrations_and_speed = sorted(
+                self.speed_vs_vibrations, key=lambda x: x[1]
+            )[-1]
             self.gcode.respond_info(
-                f"tbl={tbl_min} "
-                f"toff={toff_min} "
-                f"hstrt={hstrt_min} "
-                f"hend={hend_min} "
-                f"tpfd={tpfd_min} "
-                f"current={current_min} "
-                f"speed={min_speed:.0f} --> {max_speed:.0f}"
+                "Finding resonances took "
+                f"{self.convert_seconds_to_hms(self.get_time_elapsed())}\n"
+                "Max vibrations seems to be at "
+                f"{max_vibrations_and_speed[0]:0.1f} mm/s"
             )
-
-            speed_vs_vibrations = []
-            for speed in range(
-                int(min_speed * 100),
-                int(max_speed * 100) + 1,
-                int(speed_change_step * 100),
-            ):
-                speed = speed / 100
-                total_measured_vibrations = 0.0
-                self.gcode.respond_info("-------------------------------")
-                for _ in range(self.iterations):
-                    measured_vibrations = self.execute_vibration_measurement(
-                        speed,
-                        max_speed,
-                        travel_distance,
-                        coord_generator,
-                        self.static_noise_vector,
-                    )
-                    total_measured_vibrations += measured_vibrations
-                measured_vibrations = total_measured_vibrations / self.iterations
-
-                sample_name = self.generate_sample_name(
-                    current_min, tbl_min, toff_min, hstrt_min, hend_min, tpfd_min, speed
-                )
-                self.samples[sample_name] = measured_vibrations
-
-                speed_vs_vibrations.append((speed, measured_vibrations))
-
-            if self.measurement_mode == MeasurementMode.Resonances:
-                max_vibrations_and_speed = sorted(
-                    speed_vs_vibrations, key=lambda x: x[1]
-                )[-1]
-                self.gcode.respond_info(
-                    "Finding resonances took "
-                    f"{self.convert_seconds_to_hms(self.get_time_elapsed())}\n"
-                    "Max vibrations seems to be at "
-                    f"{max_vibrations_and_speed[0]:0.1f} mm/s"
-                )
 
         self.toolhead.dwell(0.5)
         self.toolhead.manual_move((a_axis_mid,), self.travel_speed)
@@ -1731,42 +1681,6 @@ class ChopperTune:
             message += "No previous sample data found for comparison!!!\n"
         self.gcode.respond_info(message)
         return percentile, previous_sample_result
-
-    def execute_vibration_measurement(
-        self,
-        speed: float,
-        max_speed: float,
-        travel_distance: float,
-        coord_generator: CoordGenerator,
-        static_noise_vector: tuple[float, float, float],
-    ) -> float:
-        """Execute a single vibration measurement.
-
-        Args:
-            speed (float): The speed for the measurement.
-            max_speed (float): The maximum speed for the measurement.
-            travel_distance (float): The travel distance.
-            coord_generator (CoordGenerator): The coordinate generator.
-            accel_chip (str): Accelerometer chip name, i.e adxl345.
-            steppers (list[str]): The main and secondary stepper.
-            static_noise_vector (tuple[float, float, float]): The static noise
-                vector.
-
-        Returns:
-            float: The measured vibrations.
-        """
-        real_travel_distance = travel_distance
-        if self.measurement_mode == MeasurementMode.Resonances:
-            # when finding resonances,
-            # keep the travel duration constant
-            real_travel_distance = travel_distance * (speed / max_speed)
-            self.gcode.respond_info(
-                f"Speed {speed:.0f} mm/s on {real_travel_distance:0.1f} mm"
-            )
-        self.toolhead.wait_moves()
-
-        samples = self.measure_vibrations(coord_generator, real_travel_distance, speed)
-        return self.calc_magnitude(samples=samples, static_data=static_noise_vector)
 
     def get_time_elapsed(self) -> float:
         """Get elapsed time since the start of the process.
@@ -1898,13 +1812,20 @@ class ChopperTune:
         total_vibrations = 0
         self.number_of_samples += 1
         for iteration in range(self.iterations):
-            measured_vibrations = self.execute_vibration_measurement(
-                speed,
-                self.max_speed,
-                self.travel_distance,
+            real_travel_distance = self.travel_distance
+            if self.measurement_mode == MeasurementMode.Resonances:
+                real_travel_distance = self.travel_distance * (speed / self.max_speed)
+
+            samples = self.measure_vibrations(
                 self.coord_generator,
-                self.static_noise_vector,
+                real_travel_distance,
+                speed,
             )
+            measured_vibrations = self.calc_magnitude(
+                samples=samples,
+                static_data=self.static_noise_vector,
+            )
+
             total_vibrations += measured_vibrations
             self.progress_report(measured_vibrations, iteration)
 
@@ -1918,6 +1839,7 @@ class ChopperTune:
         self.best_result = min(self.best_result, total_vibrations)
 
         self.samples[sample_name] = total_vibrations
+        self.speed_vs_vibrations.append((speed, total_vibrations))
 
         # Allow other Klipper tasks to run between iterations
         self.reactor.pause(self.reactor.monotonic() + 0.05)
@@ -1935,6 +1857,18 @@ class ChopperTune:
         """
         self.gcode.respond_info("Starting optimization...")
         start_time = self.reactor.monotonic()
+
+        if self.measurement_mode == MeasurementMode.Resonances:
+            # Dump TMC settings
+            self.gcode.respond_info(
+                f"tbl={self.tbl_min} "
+                f"toff={self.toff_min} "
+                f"hstrt={self.hstrt_min} "
+                f"hend={self.hend_min} "
+                f"tpfd={self.tpfd_min} "
+                f"current={self.current_min} "
+                f"speed={self.min_speed:.0f} --> {self.max_speed:.0f}"
+            )
 
         overall_best_params = {
             "current": -1,
