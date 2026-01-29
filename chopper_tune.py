@@ -1078,7 +1078,7 @@ class ChopperTune:
 
         return travel_distance
 
-    def display_process_info(
+    def display_process_summary(
         self,
         current_min: int,
         current_max: int,
@@ -1134,7 +1134,7 @@ class ChopperTune:
                 f"Start find resonances mode\n"
                 f"Method     : {search_method}\n"
                 f"speed      : {min_speed:.0f} --> {max_speed:.0f} mm/s with "
-                f"{speed_change_step:.0f} step\n"
+                f"{speed_change_step:.0f} mm/s step\n"
                 f"current    : {current_min} mA\n"
                 f"TBL        : {tbl_min}\n"
                 f"TOFF       : {toff_min}\n"
@@ -1354,6 +1354,7 @@ class ChopperTune:
         direction: int = 1,
         accel_chip: str = "default",
         run_plotter: bool = True,
+        compare_with: None | str = None,
     ) -> None | dict:
         """Measure vibrations and tune stepper motors for low noise.
 
@@ -1394,7 +1395,8 @@ class ChopperTune:
             accel_chip (str): The name of the acceleration chip.
             run_plotter (bool): If set to True, the magnitude graphs will be
                 generated after the vibration measurements are completed.
-
+            compare_with (None | str): The name of the previous sample set to
+                compare with.
         Returns:
             None | dict: The best parameters found, or None if tuning was not
                 done using the adaptive method.
@@ -1465,7 +1467,7 @@ class ChopperTune:
         )
 
         # Info message
-        self.display_process_info(
+        self.display_process_summary(
             current_min,
             current_max,
             tbl_min,
@@ -1609,16 +1611,8 @@ class ChopperTune:
                     total_measured_vibrations += measured_vibrations
                 measured_vibrations = total_measured_vibrations / self.iterations
 
-                freq = self.calculate_frequency(tbl_min, toff_min)
-                sample_name = (
-                    f"current={current_min}_"
-                    f"tbl={tbl_min}_"
-                    f"toff={toff_min}_"
-                    f"hstrt={hstrt_min}_"
-                    f"hend={hend_min}_"
-                    f"tpfd={tpfd_min}_"
-                    f"speed={speed:.0f}_"
-                    f"freq={freq / 1000:.1f}kHz"
+                sample_name = self.generate_sample_name(
+                    current_min, tbl_min, toff_min, hstrt_min, hend_min, tpfd_min, speed
                 )
                 self.samples[sample_name] = measured_vibrations
 
@@ -1647,6 +1641,23 @@ class ChopperTune:
         # Store data
         self.store_data(date_stamp=now)
 
+        # Compare best result with previous samples
+        if best_parameters and compare_with is not None:
+            sample_name = self.generate_sample_name(
+                best_parameters["current"],
+                best_parameters["tbl"],
+                best_parameters["toff"],
+                best_parameters["hstrt"],
+                best_parameters["hend"],
+                best_parameters["tpfd"],
+                best_parameters["speed"],
+            )
+            self.compare_results(
+                sample_name,
+                self.samples[sample_name],
+                compare_with,
+            )
+
         # reset samples related data
         self.total_expected_samples = -1
         self.number_of_samples = 0
@@ -1654,6 +1665,72 @@ class ChopperTune:
         self.samples = {}
 
         return best_parameters
+
+    def generate_sample_name(
+        self,
+        current: int,
+        tbl: int,
+        toff: int,
+        hstrt: int,
+        hend: int,
+        tpfd: int,
+        speed: float,
+    ) -> str:
+        freq = self.calculate_frequency(tbl, toff)
+        sample_name = (
+            f"current={current}_"
+            f"tbl={tbl}_"
+            f"toff={toff}_"
+            f"hstrt={hstrt}_"
+            f"hend={hend}_"
+            f"tpfd={tpfd}_"
+            f"speed={speed:.0f}_"
+            f"freq={freq / 1000:.1f}kHz"
+        )
+        return sample_name
+
+    def compare_results(self, sample_name, sample_result, previous_samples_name):
+        """Compare current sample result with previous samples.
+
+        Args:
+            sample_name (str): The name of the current sample.
+            sample_result (float): The result of the current sample.
+            previous_samples_name (str): The name of the previous samples file.
+
+        Returns:
+            tuple[None | float, None | float]: The percentile of the given
+                value within the previous samples, and the previously measured
+                value for the sample name.
+        """
+        previous_sample_path = os.path.join(
+            RESULTS_FOLDER, f"{previous_samples_name}.json"
+        )
+        if not os.path.exists(previous_sample_path):
+            return None, None
+
+        with open(previous_sample_path, "r") as f:
+            previous_samples = json.load(f)
+
+        previous_values = np.array(list(previous_samples.values()))
+        previous_sample_result = previous_samples.get(sample_name)
+        percentile = float((previous_values <= sample_result).mean())
+
+        # report comparison results
+        message = (
+            "Comparison with previous samples:\n---------------------------------\n"
+        )
+        if percentile is not None:
+            message += f"Sample    : {sample_name}\nPercentile: {percentile:.2%}\n"
+        if previous_sample_result is not None:
+            message += (
+                f"Previous value\n"
+                f"for the same\n"
+                f"sample    : {previous_sample_result:.1f} mm/s²"
+            )
+        if percentile is None and previous_sample_result is None:
+            message += "No previous sample data found for comparison!!!\n"
+        self.gcode.respond_info(message)
+        return percentile, previous_sample_result
 
     def execute_vibration_measurement(
         self,
@@ -1803,16 +1880,14 @@ class ChopperTune:
         self.apply_registers("hend", hend, self.steppers)
         self.apply_registers("tpfd", tpfd, self.steppers)
 
-        freq = self.calculate_frequency(tbl, toff)
-        sample_name = (
-            f"current={current}_"
-            f"tbl={tbl}_"
-            f"toff={toff}_"
-            f"hstrt={hstrt}_"
-            f"hend={hend}_"
-            f"tpfd={tpfd}_"
-            f"speed={speed:.0f}_"
-            f"freq={freq / 1000:.1f}kHz"
+        sample_name = self.generate_sample_name(
+            current=current,
+            tbl=tbl,
+            toff=toff,
+            hstrt=hstrt,
+            hend=hend,
+            tpfd=tpfd,
+            speed=speed,
         )
         if sample_name in self.samples:
             cached_vibrations = self.samples[sample_name]
@@ -2169,6 +2244,7 @@ class ChopperTune:
             self.iterations = gcmd.get_int("ITERATIONS", 1)
             travel_distance = gcmd.get_float("TRAVEL_DISTANCE", None)
             accel_chip = gcmd.get("ACCELEROMETER", "default").lower()
+            compare_with = gcmd.get("COMPARE_WITH", None)
 
             self.measurement_mode = {
                 "0": MeasurementMode.Vibrations,
@@ -2208,6 +2284,7 @@ class ChopperTune:
                 direction=direction,
                 accel_chip=accel_chip,
                 run_plotter=run_plotter,
+                compare_with=compare_with,
             )
         except Exception:
             self.gcode.respond_info(traceback.format_exc())
