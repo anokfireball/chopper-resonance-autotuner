@@ -15,6 +15,7 @@ from chopper_tune import SearchMethod
     [
         SearchMethod.BruteForce,
         SearchMethod.Adaptive,
+        SearchMethod.Progressive,
     ],
 )
 def test_it_is_an_int_enum(method):
@@ -27,6 +28,7 @@ def test_it_is_an_int_enum(method):
     [
         [SearchMethod.BruteForce, 0],
         [SearchMethod.Adaptive, 1],
+        [SearchMethod.Progressive, 2],
     ],
 )
 def test_enum_values(method, expected_value):
@@ -39,6 +41,7 @@ def test_enum_values(method, expected_value):
     [
         [SearchMethod.BruteForce, "BruteForce"],
         [SearchMethod.Adaptive, "Adaptive"],
+        [SearchMethod.Progressive, "Progressive"],
     ],
 )
 def test_enum_names(method, expected_value):
@@ -67,7 +70,7 @@ def test_to_method_method_is_none():
         _ = SearchMethod.to_method(None)
     assert str(cm.value) == (
         "method should be a SearchMethod enum value or one "
-        "of ['BruteForce', 'Adaptive', 0, 1], not NoneType: 'None'"
+        "of ['BruteForce', 'Adaptive', 'Progressive', 0, 1, 2], not NoneType: 'None'"
     )
 
 
@@ -78,7 +81,7 @@ def test_to_method_method_is_not_a_str():
 
     assert str(cm.value) == (
         "method should be a SearchMethod enum value or one of "
-        "['BruteForce', 'Adaptive', 0, 1], not float: '12334.123'"
+        "['BruteForce', 'Adaptive', 'Progressive', 0, 1, 2], not float: '12334.123'"
     )
 
 
@@ -89,7 +92,7 @@ def test_to_method_method_is_not_a_valid_str():
 
     assert str(cm.value) == (
         "method should be a SearchMethod enum value or one of "
-        "['BruteForce', 'Adaptive', 0, 1], not 'not a valid value'"
+        "['BruteForce', 'Adaptive', 'Progressive', 0, 1, 2], not 'not a valid value'"
     )
 
 
@@ -109,8 +112,8 @@ def test_to_method_method_is_not_a_valid_str():
         ["BRUTE_FORCE", SearchMethod.BruteForce],
         ["BrUtE_FoRcE", SearchMethod.BruteForce],
         ["bRuTe_fOrCe", SearchMethod.BruteForce],
-
         [0, SearchMethod.BruteForce],
+
         # Adaptive
         ["Adaptive", SearchMethod.Adaptive],
         ["adaptive", SearchMethod.Adaptive],
@@ -118,6 +121,14 @@ def test_to_method_method_is_not_a_valid_str():
         ["AdApTiVe", SearchMethod.Adaptive],
         ["aDaPtIvE", SearchMethod.Adaptive],
         [1, SearchMethod.Adaptive],
+
+        # Progressive
+        ["Progressive", SearchMethod.Progressive],
+        ["progressive", SearchMethod.Progressive],
+        ["PROGRESSIVE", SearchMethod.Progressive],
+        ["PrOgReSsIvE", SearchMethod.Progressive],
+        ["pRoGrEsSiVe", SearchMethod.Progressive],
+        [2, SearchMethod.Progressive],
     ],
 )
 def test_to_method_is_working_properly(method_name, method):

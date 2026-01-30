@@ -124,6 +124,7 @@ class SearchMethod(IntEnum):
 
     BruteForce = 0
     Adaptive = 1
+    Progressive = 2
 
     def __repr__(self) -> str:
         """Return the enum name for str().
@@ -1589,6 +1590,9 @@ class ChopperTune:
         # Store data
         self.store_data(date_stamp=now)
 
+        # Save Config
+        self.save_configs(best_parameters)
+
         # Compare best result with previous samples
         if best_parameters and compare_with is not None:
             sample_name = self.generate_sample_name(
@@ -1937,7 +1941,7 @@ class ChopperTune:
             )
 
             best_params = [round(p) for p in result]
-        else:
+        elif self.search_method == SearchMethod.Adaptive:
             # Adaptive search
             # 'strategy' and 'popsize' are tuned to reduce total measurements
             # 'tol' can be higher since our parameters are discrete
@@ -1976,6 +1980,82 @@ class ChopperTune:
             )
 
             best_params = [round(p) for p in result.x]
+        elif self.search_method == SearchMethod.Progressive:
+            self.gcode.respond_info("Starting Progressive (Trinamic Flowchart) Optimization...")
+
+            # Initial "Safe" Defaults as per Datasheet
+            best_current = self.current_min
+            best_toff = self.toff_min if self.toff_min > 0 else 3
+            best_tbl = 2
+            best_hend = 2
+            best_hstrt = 0
+            best_tpfd = self.tpfd_min
+            best_params = [
+                best_current,
+                best_tbl,
+                best_toff,
+                best_hstrt,
+                best_hend,
+                best_tpfd,
+                self.min_speed * 100
+            ]
+            self.total_expected_samples = (
+                (self.toff_max - self.toff_min + 1)
+                + (self.tbl_max - self.tbl_min + 1)
+                + (self.hend_max - self.hend_min + 1)
+                + (self.hstrt_max - self.hstrt_min + 1)
+            )
+
+            # Step 1: Find optimal TOFF (Base Frequency)
+            # The datasheet suggests TOFF should be chosen for 20-50kHz.
+            # We find the one that produces the least vibration at default hysteresis.
+            self.gcode.respond_info("Step 1: Optimizing TOFF...")
+            best_mag = float('inf')
+            for toff in range(self.toff_min, self.toff_max + 1):
+                best_params[2] = toff
+                mag = self.objective_function(best_params)
+                if mag < best_mag:
+                    best_mag = mag
+                    best_toff = toff
+            best_params[2] = best_toff
+            self.gcode.respond_info(f"-> Best TOFF found: {best_toff}")
+            # Step 2: Find optimal TBL (Blank Time)
+            # Clean up the comparator signal before fine-tuning hysteresis.
+            self.gcode.respond_info("Step 2: Optimizing TBL...")
+            best_mag = float('inf')
+            for tbl in range(self.tbl_min, self.tbl_max + 1):
+                best_params[1] = tbl
+                mag = self.objective_function(best_params)
+                if mag < best_mag:
+                    best_mag = mag
+                    best_tbl = tbl
+            best_params[1] = best_tbl
+            self.gcode.respond_info(f"-> Best TBL found: {best_tbl}")
+            # Step 3: Find optimal HEND (Hysteresis End / Low-side)
+            # Flowchart: Start with HSTRT=0, increase HEND until smooth.
+            self.gcode.respond_info("Step 3: Optimizing HEND...")
+            best_mag = float('inf')
+            for hend in range(self.hend_min, self.hend_max + 1):
+                best_params[4] = hend
+                mag = self.objective_function(best_params)
+                if mag < best_mag:
+                    best_mag = mag
+                    best_hend = hend
+            best_params[4] = best_hend
+            self.gcode.respond_info(f"-> Best HEND found: {best_hend}")
+            # Step 4: Find optimal HSTRT (Hysteresis Start / High-side)
+            # Flowchart: Use best HEND, increase HSTRT to fine-tune the zero-crossing.
+            self.gcode.respond_info("Step 4: Optimizing HSTRT...")
+            best_mag = float('inf')
+            for hstrt in range(self.hstrt_min, self.hstrt_max + 1):
+                best_params[3] = hstrt
+                mag = self.objective_function(best_params)
+                if mag < best_mag:
+                    best_mag = mag
+                    best_hstrt = hstrt
+            best_params[3] = best_hstrt
+            self.gcode.respond_info(f"-> Best HSTRT found: {best_hstrt}")
+            best_params = best_params
 
         # update overall best params with final results
         overall_best_params.update(
@@ -1998,8 +2078,8 @@ class ChopperTune:
             f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
-            f"speed        : {overall_best_params['speed']}\n"
-            f"current      : {overall_best_params['current']}\n"
+            f"speed        : {overall_best_params['speed']} mm/s\n"
+            f"current      : {overall_best_params['current']} mA\n"
             f"driver_tbl   : {overall_best_params['tbl']}\n"
             f"driver_toff  : {overall_best_params['toff']}\n"
             f"driver_hstrt : {overall_best_params['hstrt']}\n"
@@ -2042,6 +2122,9 @@ class ChopperTune:
         for stepper_index in range(self.registers["stepper_count"]):
             stepper_index = str(stepper_index) if stepper_index > 0 else ""
             for field, value in best_parameters.items():
+                if field == "speed":
+                    continue  # skip speed field
+
                 if field == "tpfd" and self.driver not in ["2240", "5160"]:
                     continue  # skip tpfd for unsupported drivers
 
