@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import traceback
 from datetime import datetime
 from enum import IntEnum
@@ -745,17 +744,17 @@ class ChopperTune:
 
     def apply_registers(
         self,
+        steppers: list[str],
         field: str,
         value: int,
-        steppers: list[str],
     ) -> None:
         """Apply registers.
 
         Args:
-            field (str): The name of the field to set the value of.
-            value (int): The value to set to.
             steppers (list[str]): The name of the steppers to set the register
                 field values of.
+            field (str): The name of the field to set the value of.
+            value (int): The value to set to.
         """
         if field is None or value is None:
             return
@@ -1134,8 +1133,8 @@ class ChopperTune:
             self.gcode.respond_info(
                 f"Start find resonances mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.0f} --> {max_speed:.0f} mm/s with "
-                f"{speed_change_step:.0f} mm/s step\n"
+                f"speed      : {min_speed:.2f} --> {max_speed:.2f} mm/s with "
+                f"{speed_change_step:.2f} mm/s step\n"
                 f"current    : {current_min} mA\n"
                 f"TBL        : {tbl_min}\n"
                 f"TOFF       : {toff_min}\n"
@@ -1151,7 +1150,7 @@ class ChopperTune:
             self.gcode.respond_info(
                 "Start of register enumeration mode\n"
                 f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.0f} --> {max_speed:.0f} mm/s\n"
+                f"speed      : {min_speed:.2f} --> {max_speed:.2f} mm/s\n"
                 f"current    : {current_min} --> {current_max} mA\n"
                 f"iterations : {iterations}\n"
                 f"TBL        : {tbl_min} --> {tbl_max}\n"
@@ -1398,6 +1397,7 @@ class ChopperTune:
                 generated after the vibration measurements are completed.
             compare_with (None | str): The name of the previous sample set to
                 compare with.
+
         Returns:
             None | dict: The best parameters found, or None if tuning was not
                 done using the adaptive method.
@@ -1628,20 +1628,38 @@ class ChopperTune:
         tpfd: int,
         speed: float,
     ) -> str:
+        """Generate a sample name based on the parameters.
+
+        Args:
+            current (int): The current value.
+            tbl (int): The TBL value.
+            toff (int): The TOFF value.
+            hstrt (int): The HSTRT value.
+            hend (int): The HEND value.
+            tpfd (int): The TPFD value.
+            speed (float): The speed value.
+
+        Returns:
+            str: The generated sample name.
+        """
         freq = self.calculate_frequency(tbl, toff)
-        sample_name = (
+        return (
             f"current={current}_"
             f"tbl={tbl}_"
             f"toff={toff}_"
             f"hstrt={hstrt}_"
             f"hend={hend}_"
             f"tpfd={tpfd}_"
-            f"speed={speed:.0f}_"
-            f"freq={freq / 1000:.1f}kHz"
+            f"speed={speed:.2f}_"
+            f"freq={freq / 1000:.2f}kHz"
         )
-        return sample_name
 
-    def compare_results(self, sample_name, sample_result, previous_samples_name):
+    def compare_results(
+        self,
+        sample_name: str,
+        sample_result: float,
+        previous_samples_name: str,
+    ) -> tuple[None | float, None | float]:
         """Compare current sample result with previous samples.
 
         Args:
@@ -1660,7 +1678,7 @@ class ChopperTune:
         if not os.path.exists(previous_sample_path):
             return None, None
 
-        with open(previous_sample_path, "r") as f:
+        with open(previous_sample_path) as f:
             previous_samples = json.load(f)
 
         previous_values = np.array(list(previous_samples.values()))
@@ -1779,7 +1797,7 @@ class ChopperTune:
             f"hend={hend} "
             f"tpfd={tpfd} "
             f"current={current} "
-            f"speed={speed:.0f}"
+            f"speed={speed:.2f}"
         )
 
         # penalize hstrt + hend > hstrt_hend_max
@@ -1791,12 +1809,12 @@ class ChopperTune:
             return float("inf")
 
         # Set tbl, toff, hend, and hstrt values
-        self.apply_registers("curr", current, self.steppers)
-        self.apply_registers("tbl", tbl, self.steppers)
-        self.apply_registers("toff", toff, self.steppers)
-        self.apply_registers("hstrt", hstrt, self.steppers)
-        self.apply_registers("hend", hend, self.steppers)
-        self.apply_registers("tpfd", tpfd, self.steppers)
+        self.apply_registers(self.steppers, "curr", current)
+        self.apply_registers(self.steppers, "tbl", tbl)
+        self.apply_registers(self.steppers, "toff", toff)
+        self.apply_registers(self.steppers, "hstrt", hstrt)
+        self.apply_registers(self.steppers, "hend", hend)
+        self.apply_registers(self.steppers, "tpfd", tpfd)
 
         sample_name = self.generate_sample_name(
             current=current,
@@ -1850,6 +1868,215 @@ class ChopperTune:
 
         return total_vibrations
 
+    def progressive_search_loop(
+        self,
+        param_min: int,
+        param_max: int,
+        param_index: int,
+        best_params: list[int],
+    ) -> list[int]:
+        """Progressive search loop for a single parameter.
+
+        Args:
+            param_min (int): The minimum value of the parameter.
+            param_max (int): The maximum value of the parameter.
+            param_index (int): The index of the parameter in the best_params list.
+            best_params (list[int]): The current best parameters.
+        """
+        best_mag = float("inf")
+        for param in range(param_min, param_max + 1):
+            best_params[param_index] = param
+            mag = self.objective_function(best_params)
+            if mag < best_mag:
+                best_mag = mag
+                best_param = param
+        best_params[param_index] = best_param
+        return best_params
+
+    def perform_brute_force_search(self) -> list[int]:
+        """Perform brute-force search for optimal parameters.
+
+        Returns:
+            list[int]: The best parameters found.
+        """
+        # Brute-force search
+        bounds = [
+            slice(self.current_min, self.current_max + 1, self.current_change_step),
+            slice(self.tbl_min, self.tbl_max + 1, 1),
+            slice(self.toff_min, self.toff_max + 1, 1),
+            slice(self.hstrt_min, self.hstrt_max + 1, 1),
+            slice(self.hend_min, self.hend_max + 1, 1),
+            slice(self.tpfd_min, self.tpfd_max + 1, 1),
+            slice(
+                int(self.min_speed * 100),
+                int(self.max_speed * 100) + 1,
+                int(self.speed_change_step * 100),
+            ),
+        ]
+
+        # update total expected samples
+        total_current_steps = (
+            self.current_max - self.current_min
+        ) // self.current_change_step + 1
+        total_tbl_steps = self.tbl_max - self.tbl_min + 1
+        total_toff_steps = self.toff_max - self.toff_min + 1
+        total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
+        total_hend_steps = self.hend_max - self.hend_min + 1
+        total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
+        total_speed_steps = (
+            int(self.max_speed * 100) - int(self.min_speed * 100)
+        ) // int(self.speed_change_step * 100) + 1
+        self.total_expected_samples = (
+            total_current_steps
+            * total_tbl_steps
+            * total_toff_steps
+            * total_hstrt_steps
+            * total_hend_steps
+            * total_tpfd_steps
+            * total_speed_steps
+        )
+
+        result = brute(
+            self.objective_function,
+            bounds,
+            finish=None,  # disable local optimization at the end
+        )
+
+        return [round(p) for p in result]
+
+    def perform_adaptive_search(self) -> list[int]:
+        """Perform adaptive search for optimal parameters.
+
+        Returns:
+            list[int]: The best parameters found.
+        """
+        # Adaptive search
+        # 'strategy' and 'popsize' are tuned to reduce total measurements
+        # 'tol' can be higher since our parameters are discrete
+
+        bounds = [
+            (self.current_min, self.current_max),
+            (self.tbl_min, self.tbl_max),
+            (self.toff_min, self.toff_max),
+            (self.hstrt_min, self.hstrt_max),
+            (self.hend_min, self.hend_max),
+            (self.tpfd_min, self.tpfd_max),
+            (self.min_speed * 100, self.max_speed * 100),
+        ]
+
+        number_of_changing_params = 0
+        for bound in bounds:
+            if bound[0] != bound[1]:
+                number_of_changing_params += 1
+        number_of_changing_params += 1  # add one for safety
+
+        maxiter = 10
+        popsize = 5
+        self.total_expected_samples = maxiter * popsize * number_of_changing_params
+        result = differential_evolution(
+            self.objective_function,
+            bounds,
+            init="sobol",
+            strategy="best1bin",
+            maxiter=maxiter,
+            popsize=popsize,  # Total evaluations = maxiter * popsize * N_params
+            tol=0.05,  # Higher tolerance for discrete parameters
+            mutation=(0.3, 0.8),
+            recombination=0.9,  # Increased for faster parameter mixing
+            polish=False,  # Polish uses local minimize, which we avoid for discrete
+            updating="immediate",  # Uses best results immediately
+        )
+
+        return [round(p) for p in result.x]
+
+    def perform_progressive_search(self) -> list[int]:
+        """Perform progressive search for optimal parameters.
+
+        Returns:
+            list[int]: The best parameters found.
+        """
+        self.gcode.respond_info(
+            "Starting Progressive (Trinamic Flowchart) Optimization..."
+        )
+
+        # Initial "Safe" Defaults as per Datasheet
+        best_current = self.current_min
+        best_toff = self.toff_min if self.toff_min > 0 else 3
+        best_tbl = 2
+        best_hend = self.hend_min
+        best_hstrt = self.hstrt_min
+        best_tpfd = self.tpfd_min
+        best_params = [
+            best_current,
+            best_tbl,
+            best_toff,
+            best_hstrt,
+            best_hend,
+            best_tpfd,
+            self.min_speed * 100,
+        ]
+        self.total_expected_samples = (
+            (self.toff_max - self.toff_min + 1)
+            + (self.tbl_max - self.tbl_min + 1)
+            + (self.hend_max - self.hend_min + 1)
+            + (self.hstrt_max - self.hstrt_min + 1)
+        )
+
+        # Step 1: Find optimal TOFF (Base Frequency)
+        # The datasheet suggests TOFF should be chosen for 20-50kHz.
+        # We find the one that produces the least vibration at default hysteresis.
+        self.gcode.respond_info("Step 1: Optimizing TOFF...")
+        best_params = self.progressive_search_loop(
+            param_min=self.toff_min,
+            param_max=self.toff_max,
+            param_index=2,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best TOFF found: {best_params[2]}")
+        # Step 2: Find optimal TBL (Blank Time)
+        # Clean up the comparator signal before fine-tuning hysteresis.
+        self.gcode.respond_info("Step 2: Optimizing TBL...")
+        best_params = self.progressive_search_loop(
+            param_min=self.tbl_min,
+            param_max=self.tbl_max,
+            param_index=1,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best TBL found: {best_params[1]}")
+        # Step 3: Find optimal HEND (Hysteresis End / Low-side)
+        # Flowchart: Start with HSTRT=0, increase HEND until smooth.
+        self.gcode.respond_info("Step 3: Optimizing HEND...")
+        best_params = self.progressive_search_loop(
+            param_min=self.hend_min,
+            param_max=self.hend_max,
+            param_index=4,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best HEND found: {best_params[4]}")
+        # Step 4: Find optimal HSTRT (Hysteresis Start / High-side)
+        # Flowchart: Use best HEND, increase HSTRT to fine-tune the zero-crossing.
+        self.gcode.respond_info("Step 4: Optimizing HSTRT...")
+        best_params = self.progressive_search_loop(
+            param_min=self.hstrt_min,
+            param_max=self.hstrt_max,
+            param_index=3,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best HSTRT found: {best_params[3]}")
+
+        # Finally search for TPFD if applicable
+        if self.driver in ["2240", "5160"]:
+            self.gcode.respond_info("Step 5: Optimizing TPFD...")
+            best_params = self.progressive_search_loop(
+                param_min=self.tpfd_min,
+                param_max=self.tpfd_max,
+                param_index=5,
+                best_params=best_params,
+            )
+            self.gcode.respond_info(f"-> Best TPFD found: {best_params[5]}")
+
+        return best_params
+
     def search_best_parameters(self) -> list[int]:
         """Run the parameter search process.
 
@@ -1871,214 +2098,44 @@ class ChopperTune:
                 f"hend={self.hend_min} "
                 f"tpfd={self.tpfd_min} "
                 f"current={self.current_min} "
-                f"speed={self.min_speed:.0f} --> {self.max_speed:.0f}"
+                f"speed={self.min_speed:.2f} --> {self.max_speed:.2f}"
             )
-
-        overall_best_params = {
-            "current": -1,
-            "tbl": -1,
-            "toff": -1,
-            "hstrt": -1,
-            "hend": -1,
-            "tpfd": -1,
-            "speed": -1,
-        }
 
         # set initial values
-        self.apply_registers(
-            steppers=self.steppers, field="curr", value=self.current_min
-        )
-        self.apply_registers(steppers=self.steppers, field="tbl", value=self.tbl_min)
-        self.apply_registers(steppers=self.steppers, field="toff", value=self.toff_min)
-        self.apply_registers(steppers=self.steppers, field="hend", value=self.hend_min)
-        self.apply_registers(
-            steppers=self.steppers, field="hstrt", value=self.hstrt_min
-        )
-        self.apply_registers(steppers=self.steppers, field="tpfd", value=self.tpfd_min)
+        self.apply_registers(self.steppers, "curr", self.current_min)
+        self.apply_registers(self.steppers, "tbl", self.tbl_min)
+        self.apply_registers(self.steppers, "toff", self.toff_min)
+        self.apply_registers(self.steppers, "hend", self.hend_min)
+        self.apply_registers(self.steppers, "hstrt", self.hstrt_min)
+        self.apply_registers(self.steppers, "tpfd", self.tpfd_min)
 
         if self.search_method == SearchMethod.BruteForce:
-            # Brute-force search
-            bounds = [
-                slice(self.current_min, self.current_max + 1, self.current_change_step),
-                slice(self.tbl_min, self.tbl_max + 1, 1),
-                slice(self.toff_min, self.toff_max + 1, 1),
-                slice(self.hstrt_min, self.hstrt_max + 1, 1),
-                slice(self.hend_min, self.hend_max + 1, 1),
-                slice(self.tpfd_min, self.tpfd_max + 1, 1),
-                slice(
-                    int(self.min_speed * 100),
-                    int(self.max_speed * 100) + 1,
-                    int(self.speed_change_step * 100),
-                ),
-            ]
-
-            # update total expected samples
-            total_current_steps = (
-                self.current_max - self.current_min
-            ) // self.current_change_step + 1
-            total_tbl_steps = self.tbl_max - self.tbl_min + 1
-            total_toff_steps = self.toff_max - self.toff_min + 1
-            total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
-            total_hend_steps = self.hend_max - self.hend_min + 1
-            total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
-            total_speed_steps = (
-                int(self.max_speed * 100) - int(self.min_speed * 100)
-            ) // int(self.speed_change_step * 100) + 1
-            self.total_expected_samples = (
-                total_current_steps
-                * total_tbl_steps
-                * total_toff_steps
-                * total_hstrt_steps
-                * total_hend_steps
-                * total_tpfd_steps
-                * total_speed_steps
-            )
-
-            result = brute(
-                self.objective_function,
-                bounds,
-                finish=None,  # disable local optimization at the end
-            )
-
-            best_params = [round(p) for p in result]
+            best_params = self.perform_brute_force_search()
         elif self.search_method == SearchMethod.Adaptive:
-            # Adaptive search
-            # 'strategy' and 'popsize' are tuned to reduce total measurements
-            # 'tol' can be higher since our parameters are discrete
-
-            bounds = [
-                (self.current_min, self.current_max),
-                (self.tbl_min, self.tbl_max),
-                (self.toff_min, self.toff_max),
-                (self.hstrt_min, self.hstrt_max),
-                (self.hend_min, self.hend_max),
-                (self.tpfd_min, self.tpfd_max),
-                (self.min_speed * 100, self.max_speed * 100),
-            ]
-
-            number_of_changing_params = 0
-            for bound in bounds:
-                if bound[0] != bound[1]:
-                    number_of_changing_params += 1
-            number_of_changing_params += 1  # add one for safety
-
-            maxiter = 10
-            popsize = 5
-            self.total_expected_samples = maxiter * popsize * number_of_changing_params
-            result = differential_evolution(
-                self.objective_function,
-                bounds,
-                init="sobol",
-                strategy="best1bin",
-                maxiter=maxiter,
-                popsize=popsize,  # Total evaluations = maxiter * popsize * N_params
-                tol=0.05,  # Higher tolerance for discrete parameters
-                mutation=(0.3, 0.8),
-                recombination=0.9,  # Increased for faster parameter mixing
-                polish=False,  # Polish uses local minimize, which we avoid for discrete
-                updating="immediate",  # Uses best results immediately
-            )
-
-            best_params = [round(p) for p in result.x]
+            best_params = self.perform_adaptive_search()
         elif self.search_method == SearchMethod.Progressive:
-            self.gcode.respond_info("Starting Progressive (Trinamic Flowchart) Optimization...")
-
-            # Initial "Safe" Defaults as per Datasheet
-            best_current = self.current_min
-            best_toff = self.toff_min if self.toff_min > 0 else 3
-            best_tbl = 2
-            best_hend = 2
-            best_hstrt = 0
-            best_tpfd = self.tpfd_min
-            best_params = [
-                best_current,
-                best_tbl,
-                best_toff,
-                best_hstrt,
-                best_hend,
-                best_tpfd,
-                self.min_speed * 100
-            ]
-            self.total_expected_samples = (
-                (self.toff_max - self.toff_min + 1)
-                + (self.tbl_max - self.tbl_min + 1)
-                + (self.hend_max - self.hend_min + 1)
-                + (self.hstrt_max - self.hstrt_min + 1)
-            )
-
-            # Step 1: Find optimal TOFF (Base Frequency)
-            # The datasheet suggests TOFF should be chosen for 20-50kHz.
-            # We find the one that produces the least vibration at default hysteresis.
-            self.gcode.respond_info("Step 1: Optimizing TOFF...")
-            best_mag = float('inf')
-            for toff in range(self.toff_min, self.toff_max + 1):
-                best_params[2] = toff
-                mag = self.objective_function(best_params)
-                if mag < best_mag:
-                    best_mag = mag
-                    best_toff = toff
-            best_params[2] = best_toff
-            self.gcode.respond_info(f"-> Best TOFF found: {best_toff}")
-            # Step 2: Find optimal TBL (Blank Time)
-            # Clean up the comparator signal before fine-tuning hysteresis.
-            self.gcode.respond_info("Step 2: Optimizing TBL...")
-            best_mag = float('inf')
-            for tbl in range(self.tbl_min, self.tbl_max + 1):
-                best_params[1] = tbl
-                mag = self.objective_function(best_params)
-                if mag < best_mag:
-                    best_mag = mag
-                    best_tbl = tbl
-            best_params[1] = best_tbl
-            self.gcode.respond_info(f"-> Best TBL found: {best_tbl}")
-            # Step 3: Find optimal HEND (Hysteresis End / Low-side)
-            # Flowchart: Start with HSTRT=0, increase HEND until smooth.
-            self.gcode.respond_info("Step 3: Optimizing HEND...")
-            best_mag = float('inf')
-            for hend in range(self.hend_min, self.hend_max + 1):
-                best_params[4] = hend
-                mag = self.objective_function(best_params)
-                if mag < best_mag:
-                    best_mag = mag
-                    best_hend = hend
-            best_params[4] = best_hend
-            self.gcode.respond_info(f"-> Best HEND found: {best_hend}")
-            # Step 4: Find optimal HSTRT (Hysteresis Start / High-side)
-            # Flowchart: Use best HEND, increase HSTRT to fine-tune the zero-crossing.
-            self.gcode.respond_info("Step 4: Optimizing HSTRT...")
-            best_mag = float('inf')
-            for hstrt in range(self.hstrt_min, self.hstrt_max + 1):
-                best_params[3] = hstrt
-                mag = self.objective_function(best_params)
-                if mag < best_mag:
-                    best_mag = mag
-                    best_hstrt = hstrt
-            best_params[3] = best_hstrt
-            self.gcode.respond_info(f"-> Best HSTRT found: {best_hstrt}")
-            best_params = best_params
+            best_params = self.perform_progressive_search()
 
         # update overall best params with final results
-        overall_best_params.update(
-            {
-                "current": best_params[0],
-                "tbl": best_params[1],
-                "toff": best_params[2],
-                "hstrt": best_params[3],
-                "hend": best_params[4],
-                "tpfd": best_params[5],
-                "speed": float(best_params[6]) / 100,
-            }
-        )
+        overall_best_params = {
+            "current": best_params[0],
+            "tbl": best_params[1],
+            "toff": best_params[2],
+            "hstrt": best_params[3],
+            "hend": best_params[4],
+            "tpfd": best_params[5],
+            "speed": float(best_params[6]) / 100,
+        }
 
         duration = self.reactor.monotonic() - start_time
 
-        self.gcode.respond_info(
+        result_message = (
             f"Optimization Completed in {self.convert_seconds_to_hms(duration)}\n"
             f"Number of samples : {self.number_of_samples}\n"
             f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
             "Parameters\n"
             "----------\n"
-            f"speed        : {overall_best_params['speed']} mm/s\n"
+            f"speed        : {overall_best_params['speed']:.2f} mm/s\n"
             f"current      : {overall_best_params['current']} mA\n"
             f"driver_tbl   : {overall_best_params['tbl']}\n"
             f"driver_toff  : {overall_best_params['toff']}\n"
@@ -2086,27 +2143,16 @@ class ChopperTune:
             f"driver_hend  : {overall_best_params['hend']}\n"
         )
         if self.driver in ["2240", "5160"]:
-            self.gcode.respond_info(f"driver_tpfd : {overall_best_params['tpfd']}")
+            result_message += f"driver_tpfd : {overall_best_params['tpfd']}"
+        self.gcode.respond_info(result_message)
 
-        # Apply best parameters one last time
-        self.apply_registers(
-            steppers=self.steppers, field="curr", value=overall_best_params["current"]
-        )
-        self.apply_registers(
-            steppers=self.steppers, field="tbl", value=overall_best_params["tbl"]
-        )
-        self.apply_registers(
-            steppers=self.steppers, field="toff", value=overall_best_params["toff"]
-        )
-        self.apply_registers(
-            steppers=self.steppers, field="hend", value=overall_best_params["hend"]
-        )
-        self.apply_registers(
-            steppers=self.steppers, field="hstrt", value=overall_best_params["hstrt"]
-        )
-        self.apply_registers(
-            steppers=self.steppers, field="tpfd", value=overall_best_params["tpfd"]
-        )
+        # Apply best parameters
+        self.apply_registers(self.steppers, "curr", overall_best_params["current"])
+        self.apply_registers(self.steppers, "tbl", overall_best_params["tbl"])
+        self.apply_registers(self.steppers, "toff", overall_best_params["toff"])
+        self.apply_registers(self.steppers, "hend", overall_best_params["hend"])
+        self.apply_registers(self.steppers, "hstrt", overall_best_params["hstrt"])
+        self.apply_registers(self.steppers, "tpfd", overall_best_params["tpfd"])
 
         return overall_best_params
 
