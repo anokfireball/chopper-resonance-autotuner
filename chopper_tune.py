@@ -42,8 +42,6 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 
-IS_DIGIT = re.compile(r"[0-9\-.]+")
-
 DEFAULT_ACCEL_CHIP = "adxl345"
 RESULTS_FOLDER = os.path.expanduser(
     "~/printer_data/config/adxl_results/chopper_magnitude"
@@ -1722,7 +1720,7 @@ class ChopperTune:
         return f"{hours_str}{minutes_str}{secs}s"
 
     def progress_report(
-        self, measured_vibrations: float = 0.0, iteration: int = 0
+        self, measured_vibrations: float = 0.0, iteration: int = 0, cached: bool = False
     ) -> None:
         """Report progress.
 
@@ -1730,6 +1728,7 @@ class ChopperTune:
             measured_vibrations (float): The measured vibrations.
             iteration (int): The current iteration. Only report progress on the
                 first iteration.
+            cached (bool): Whether the vibrations value is from a cached sample.
         """
         if iteration == 0:
             if self.total_expected_samples > 0:
@@ -1737,7 +1736,8 @@ class ChopperTune:
                     self.number_of_samples / self.total_expected_samples
                 ) * 100
                 self.gcode.respond_info(
-                    f"Sample         : {self.number_of_samples}/"
+                    f"Sample {'(cached)' if cached else '        '}: "
+                    f"{self.number_of_samples}/"
                     f"{self.total_expected_samples} "
                     f"({percent_complete:0.1f}%) | "
                     f"E: {self.convert_seconds_to_hms(self.get_time_elapsed())} | "
@@ -1806,19 +1806,19 @@ class ChopperTune:
         if sample_name in self.samples:
             cached_vibrations = self.samples[sample_name]
             self.number_of_samples += 1  # consider this as a sample
-            self.progress_report(cached_vibrations)
+            self.progress_report(cached_vibrations, cached=True)
             return cached_vibrations
 
         total_vibrations = 0
         self.number_of_samples += 1
-        for iteration in range(self.iterations):
-            real_travel_distance = self.travel_distance
-            if self.measurement_mode == MeasurementMode.Resonances:
-                real_travel_distance = self.travel_distance * (speed / self.max_speed)
+        travel_distance = self.travel_distance
+        if self.measurement_mode == MeasurementMode.Resonances:
+            travel_distance = self.travel_distance * (speed / self.max_speed)
 
+        for iteration in range(self.iterations):
             samples = self.measure_vibrations(
                 self.coord_generator,
-                real_travel_distance,
+                travel_distance,
                 speed,
             )
             measured_vibrations = self.calc_magnitude(
@@ -1942,7 +1942,7 @@ class ChopperTune:
             # 'strategy' and 'popsize' are tuned to reduce total measurements
             # 'tol' can be higher since our parameters are discrete
 
-            partial_bounds = [
+            bounds = [
                 (self.current_min, self.current_max),
                 (self.tbl_min, self.tbl_max),
                 (self.toff_min, self.toff_max),
@@ -1952,18 +1952,27 @@ class ChopperTune:
                 (self.min_speed * 100, self.max_speed * 100),
             ]
 
-            self.total_expected_samples = 10 * 5 * len(partial_bounds)
+            number_of_changing_params = 0
+            for bound in bounds:
+                if bound[0] != bound[1]:
+                    number_of_changing_params += 1
+            number_of_changing_params += 1  # add one for safety
+
+            maxiter = 10
+            popsize = 5
+            self.total_expected_samples = maxiter * popsize * number_of_changing_params
             result = differential_evolution(
                 self.objective_function,
-                partial_bounds,
+                bounds,
                 init="sobol",
                 strategy="best1bin",
-                maxiter=10,
-                popsize=5,  # Total evaluations = maxiter * popsize * N_params
-                tol=0.1,
-                mutation=(0.5, 1),
-                recombination=0.7,
+                maxiter=maxiter,
+                popsize=popsize,  # Total evaluations = maxiter * popsize * N_params
+                tol=0.05,  # Higher tolerance for discrete parameters
+                mutation=(0.3, 0.8),
+                recombination=0.9,  # Increased for faster parameter mixing
                 polish=False,  # Polish uses local minimize, which we avoid for discrete
+                updating="immediate",  # Uses best results immediately
             )
 
             best_params = [round(p) for p in result.x]
