@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from configfile import ConfigWrapper
     from extras.adxl345 import ADXL345, Accel_Measurement
+    from extras.lis2dw import LIS2DW
     from gcode import GCodeCommand, GCodeDispatch
     from klippy import Printer
     from reactor import PollReactor
@@ -177,16 +178,16 @@ class AccelerometerMeasure:
 
     def __init__(
         self,
-        adxl345: ADXL345,
+        accelerometer: ADXL345 | LIS2DW,
     ) -> None:
-        self.adxl345 = adxl345
+        self.accelerometer = accelerometer
         self.bg_client = None
         self.samples: None | list[Accel_Measurement] = None
 
     def __enter__(self) -> Self:
         """Enter to the context."""
         if self.bg_client is None:
-            self.bg_client = self.adxl345.start_internal_client()
+            self.bg_client = self.accelerometer.start_internal_client()
         return self
 
     def __exit__(
@@ -476,7 +477,7 @@ class ChopperTune:
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.configfile = self.printer.lookup_object("configfile")
         self.toolhead: None | ToolHead = None
-        self.adxl345: None | ADXL345 = None
+        self.accelerometer: None | ADXL345 | LIS2DW = None
         self.settings = None
         self.reactor: PollReactor = self.printer.get_reactor()
         self.driver_settings = {}
@@ -519,11 +520,11 @@ class ChopperTune:
         self.travel_speed = None
         self.travel_distance = None
         self.coord_generator = None
-        self.accel_chip = None
+        self.accel_chip_name = None
         self.steppers = None
         self.current = None
-        self.static_noise_vector = None
-        self.static_noise_magnitude = None
+        self.static_acceleration_vector = None
+        self.static_acceleration_magnitude = None
         self.initial_position = None
         self.initial_direction = None
 
@@ -566,7 +567,6 @@ class ChopperTune:
             self.stepper_settings[f"stepper_{axis}"] = self.settings.get(
                 f"stepper_{axis}", {}
             )
-        self.adxl345 = self.printer.lookup_object("adxl345")
 
     def detect_driver(self, stepper: str) -> None | tuple[str, str]:
         """Detect the driver of the selected stepper.
@@ -804,23 +804,26 @@ class ChopperTune:
         ]
         return len(axis_steppers)
 
-    def get_accelerometer_chip(self, accel_chip: str) -> str:
+    def get_accelerometer_chip(self, accel_chip_name: str, axis: None | str) -> str:
         """Get accelerometer chip.
 
         Args:
             accel_chip (str): Accelerometer chip name, i.e adxl345.
+            axis (None | str): The selected axis.
         """
         # Select accelerometer
-        if accel_chip == "default":
+        if accel_chip_name == "default":
             resonance_tester = self.settings.get("resonance_tester", {})
             if "accel_chip" in resonance_tester:
-                accel_chip = resonance_tester["accel_chip"]
+                accel_chip_name = resonance_tester["accel_chip"]
+            elif axis is not None and f"accel_chip_{axis}" in resonance_tester:
+                accel_chip_name = resonance_tester[f"accel_chip_{axis}"]
             else:
                 # Use Default accelerometer
-                accel_chip = DEFAULT_ACCEL_CHIP
+                accel_chip_name = DEFAULT_ACCEL_CHIP
 
-        self.gcode.respond_info(f"Selected {accel_chip} for accelerometer")
-        return accel_chip
+        self.gcode.respond_info(f"Selected {accel_chip_name} for accelerometer")
+        return accel_chip_name
 
     def get_current_range(
         self,
@@ -1165,8 +1168,8 @@ class ChopperTune:
         self.gcode.run_script_from_command("G28 X Y Z")
         self.toolhead.wait_moves()
 
-    def get_standing_acceleration(self) -> list[Accel_Measurement]:
-        """Get standing accelerometer samples.
+    def get_static_acceleration(self) -> list[Accel_Measurement]:
+        """Get static accelerometer samples.
 
         This will help removing the effect of gravity + static vibrations from
         real vibration data.
@@ -1175,7 +1178,7 @@ class ChopperTune:
             list[Accel_Measurement]: The measurement data samples.
         """
         self.toolhead.wait_moves()
-        with AccelerometerMeasure(self.adxl345) as accelerometer_measurement:
+        with AccelerometerMeasure(self.accelerometer) as accelerometer_measurement:
             self.toolhead.dwell(5.0)
         return accelerometer_measurement.samples
 
@@ -1198,7 +1201,7 @@ class ChopperTune:
             list[Accel_Measurement]: The measurement data samples.
         """
         # Start accel_chip data collection
-        with AccelerometerMeasure(adxl345=self.adxl345) as accelerometer_measurement:
+        with AccelerometerMeasure(accelerometer=self.accelerometer) as accelerometer_measurement:
             next_coord = coord_generator.next(travel_distance)
             self.toolhead.manual_move(next_coord, speed)
         # Move to the initial position
@@ -1274,13 +1277,14 @@ class ChopperTune:
                 self.gcode.respond_info(f"Timeout waiting for file: {data_path}")
                 break
 
-    def calc_static_magnitude(
+    def calc_static_acceleration_magnitude(
         self, samples: list[Accel_Measurement]
     ) -> tuple[float, float, float]:
         """Calculate static acceleration data from CSV file.
 
         Args:
-            samples (list[Accel_Measurement]): The list of acceleration data samples.
+            samples (list[Accel_Measurement]): The list of acceleration data
+                samples.
 
         Returns:
             tuple[float, float, float]: Mean static acceleration vector.
@@ -1315,8 +1319,8 @@ class ChopperTune:
         magnitudes = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
 
         # Create a 4th order Butterworth filter
-        cutoff_freq = 150  # Hz
-        nyquist_freq = self.adxl345.data_rate / 2
+        cutoff_freq = 300  # Hz
+        nyquist_freq = self.accelerometer.data_rate / 2
         normal_cutoff = cutoff_freq / nyquist_freq
 
         b, a = signal.butter(4, normal_cutoff, btype="low", analog=False)
@@ -1352,7 +1356,7 @@ class ChopperTune:
         search_method: SearchMethod = SearchMethod.BruteForce,
         travel_distance: None | int = None,
         direction: int = 1,
-        accel_chip: str = "default",
+        accel_chip_name: str = "default",
         run_plotter: bool = True,
         compare_with: None | str = None,
     ) -> None | dict:
@@ -1425,7 +1429,8 @@ class ChopperTune:
 
         a_axis_min, a_axis_max, a_axis_mid, b_axis_mid = self.get_axis_limits(axes)
         acceleration, self.travel_speed = self.get_travel_speed_and_acceleration(axes)
-        accel_chip = self.get_accelerometer_chip(accel_chip)
+        accel_chip_name = self.get_accelerometer_chip(accel_chip_name, axis)
+        self.accelerometer = self.printer.lookup_object(accel_chip_name)
 
         current_min, current_max = self.get_current_range(
             self.measurement_mode, current_min, current_max, steppers
@@ -1512,17 +1517,17 @@ class ChopperTune:
         self.toolhead.wait_moves()
 
         # Measure accelerometer noise
-        samples = self.get_standing_acceleration()
-        self.static_noise_vector = self.calc_static_magnitude(samples)
-        self.static_noise_magnitude = float(np.linalg.norm(self.static_noise_vector))
+        samples = self.get_static_acceleration()
+        self.static_acceleration_vector = self.calc_static_acceleration_magnitude(samples)
+        self.static_acceleration_magnitude = float(np.linalg.norm(self.static_acceleration_vector))
 
         # set the global start time here
         self.global_start_time = self.reactor.monotonic()
 
-        nv = self.static_noise_vector
+        nv = self.static_acceleration_vector
         self.gcode.respond_info(
-            f"Static noise vector    = {nv[0]:0.1f} {nv[1]:0.1f} {nv[2]:0.1f} mm/s²\n"
-            f"Static noise magnitude = {self.static_noise_magnitude:.1f} mm/s²\n"
+            f"Static acceleration vector    = {nv[0]:0.1f} {nv[1]:0.1f} {nv[2]:0.1f} mm/s²\n"
+            f"Static acceleration magnitude = {self.static_acceleration_magnitude:.1f} mm/s²\n"
             "(HINT: this should be close to earth's gravity of 9806 mm/s²)"
         )
 
@@ -1535,7 +1540,7 @@ class ChopperTune:
         # calculated vars
         self.travel_distance = travel_distance
         self.coord_generator = coord_generator
-        self.accel_chip = accel_chip
+        self.accel_chip_name = accel_chip_name
         self.steppers = steppers
         self.current = current_min
 
@@ -1815,7 +1820,6 @@ class ChopperTune:
         self.apply_registers(self.steppers, "hstrt", hstrt)
         self.apply_registers(self.steppers, "hend", hend)
         self.apply_registers(self.steppers, "tpfd", tpfd)
-
         sample_name = self.generate_sample_name(
             current=current,
             tbl=tbl,
@@ -1845,7 +1849,7 @@ class ChopperTune:
             )
             measured_vibrations = self.calc_magnitude(
                 samples=samples,
-                static_data=self.static_noise_vector,
+                static_data=self.static_acceleration_vector,
             )
 
             total_vibrations += measured_vibrations
@@ -2229,13 +2233,17 @@ class ChopperTune:
                 RESULTS_FOLDER,
                 f"{date_stamp}"
                 f"_interactive_plot_{name}"
-                f"_{self.accel_chip}"
+                f"_{self.accel_chip_name}"
                 f"_tmc{self.driver}"
                 f"_{self.steppers[0]}"
                 f"_{self.sense_resistor}"
                 ".html",
             )
             plot_html_paths.append(plot_html_path)
+            # check if the RESULTS_FOLDER exists before writing
+            if not os.path.exists(RESULTS_FOLDER):
+                os.makedirs(RESULTS_FOLDER)
+
             pio.write_html(fig, plot_html_path, auto_open=False)
             speed1 = params[1][0][0].split("_")[6].split("=")[1]
             speed2 = params[1][1][0].split("_")[6].split("=")[1]
@@ -2260,7 +2268,7 @@ class ChopperTune:
             RESULTS_FOLDER,
             f"{date_stamp}"
             f"_sample_data"
-            f"_{self.accel_chip}"
+            f"_{self.accel_chip_name}"
             f"_tmc{self.driver}"
             f"_{self.steppers[0]}"
             f"_{self.sense_resistor}"
@@ -2315,7 +2323,7 @@ class ChopperTune:
             speed_change_step = gcmd.get_float("SPEED_CHANGE_STEP", None)
             self.iterations = gcmd.get_int("ITERATIONS", 1)
             travel_distance = gcmd.get_float("TRAVEL_DISTANCE", None)
-            accel_chip = gcmd.get("ACCELEROMETER", "default").lower()
+            accel_chip_name = gcmd.get("ACCELEROMETER", "default").lower()
             compare_with = gcmd.get("COMPARE_WITH", None)
 
             self.measurement_mode = {
@@ -2354,7 +2362,7 @@ class ChopperTune:
                 search_method=search_method,
                 travel_distance=travel_distance,
                 direction=direction,
-                accel_chip=accel_chip,
+                accel_chip_name=accel_chip_name,
                 run_plotter=run_plotter,
                 compare_with=compare_with,
             )
