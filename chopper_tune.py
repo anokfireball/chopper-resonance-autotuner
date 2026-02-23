@@ -43,10 +43,10 @@ if TYPE_CHECKING:
 
 DEFAULT_ACCEL_CHIP = "adxl345"
 RESULTS_FOLDER = os.path.expanduser(
-    "~/printer_data/config/adxl_results/chopper_magnitude"
+    "~/printer_data/config/chopper_magnitude"
 )
 DATA_FOLDER = os.path.expanduser(
-    "~/printer_data/config/adxl_results/chopper_magnitude/tmp"
+    "~/printer_data/config/chopper_magnitude/tmp"
 )
 
 FCLK = 12  # MHz
