@@ -1316,11 +1316,16 @@ class ChopperTune:
         accel_y = np.array([sample.accel_y for sample in samples]) - static_data[1]
         accel_z = np.array([sample.accel_z for sample in samples]) - static_data[2]
 
+        # calculate the sample rate
+        duration = samples[-1].time - samples[0].time
+        number_of_samples = len(samples)
+        sample_rate = number_of_samples / duration
+
         magnitudes = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
 
         # Create a 4th order Butterworth filter
         cutoff_freq = 300  # Hz
-        nyquist_freq = self.accelerometer.data_rate / 2
+        nyquist_freq = sample_rate / 2
         normal_cutoff = cutoff_freq / nyquist_freq
 
         b, a = signal.butter(4, normal_cutoff, btype="low", analog=False)
