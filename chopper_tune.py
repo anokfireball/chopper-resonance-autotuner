@@ -1514,7 +1514,15 @@ class ChopperTune:
         if direction == -1:
             self.initial_direction = self.initial_direction * -1
 
-        self.toolhead.set_max_velocities(None, acceleration, None, None)
+        try:
+            self.toolhead.set_max_velocities(None, acceleration, None, None)
+        except AttributeError:
+            # This is either an older Klipper version or Kalico
+            self.gcode.run_script_from_command(
+                f"SET_VELOCITY_LIMIT ACCEL={acceleration}\n"
+                f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
+            )
+            self.toolhead.wait_moves()
 
         # move away from the middle exactly half or a travel distance
         self.initial_position -= self.initial_direction * (travel_distance / 2)
