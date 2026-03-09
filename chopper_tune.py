@@ -24,6 +24,9 @@ import numpy as np
 from scipy import signal
 from scipy.optimize import brute, differential_evolution
 
+# Klipper Imports
+import gcode
+
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
@@ -1514,15 +1517,15 @@ class ChopperTune:
         if direction == -1:
             self.initial_direction = self.initial_direction * -1
 
-        try:
-            self.toolhead.set_max_velocities(None, acceleration, None, None)
-        except AttributeError:
-            # This is either an older Klipper version or Kalico
-            self.gcode.run_script_from_command(
-                f"SET_VELOCITY_LIMIT ACCEL={acceleration}\n"
-                f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
-            )
-            self.toolhead.wait_moves()
+        # try:
+        #     self.toolhead.set_max_velocities(None, acceleration, None, None)
+        # except AttributeError:
+        # This is either an older Klipper version or Kalico
+        self.gcode.run_script_from_command(
+            f"SET_VELOCITY_LIMIT ACCEL={acceleration}\n"
+            f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
+        )
+        self.toolhead.wait_moves()
 
         # move away from the middle exactly half or a travel distance
         self.initial_position -= self.initial_direction * (travel_distance / 2)
@@ -2379,7 +2382,7 @@ class ChopperTune:
                 run_plotter=run_plotter,
                 compare_with=compare_with,
             )
-        except Exception:
+        except Exception as e:
             self.gcode.respond_info(traceback.format_exc())
 
     def cmd_chopper_tune_debug(self, gcmd: GCodeCommand) -> bool:
