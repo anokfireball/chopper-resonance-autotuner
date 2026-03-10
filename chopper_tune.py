@@ -2317,9 +2317,9 @@ class ChopperTune:
         try:
             axis = gcmd.get("AXIS", "x").lower()
             direction = gcmd.get_int("DIRECTION", 1)
-            # search_method can be brute_force or adaptive
+            # search_method can be brute_force, adaptive or progressive
             search_method = SearchMethod.to_method(
-                gcmd.get("SEARCH_METHOD", "brute_force").lower()
+                gcmd.get("SEARCH_METHOD", "progressive").lower()
             )
             current_min = gcmd.get_float("CURRENT_MIN_MA", None)
             current_max = gcmd.get_float("CURRENT_MAX_MA", None)
