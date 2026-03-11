@@ -24,6 +24,9 @@ import numpy as np
 from scipy import signal
 from scipy.optimize import brute, differential_evolution
 
+# Klipper Imports
+import gcode
+
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
@@ -43,12 +46,8 @@ if TYPE_CHECKING:
 
 
 DEFAULT_ACCEL_CHIP = "adxl345"
-RESULTS_FOLDER = os.path.expanduser(
-    "~/printer_data/config/chopper_magnitude"
-)
-DATA_FOLDER = os.path.expanduser(
-    "~/printer_data/config/chopper_magnitude/tmp"
-)
+RESULTS_FOLDER = os.path.expanduser("~/printer_data/config/chopper_magnitude")
+DATA_FOLDER = os.path.expanduser("~/printer_data/config/chopper_magnitude/tmp")
 
 FCLK = 12  # MHz
 CUTOFF_RANGE = 5
@@ -64,6 +63,18 @@ COLORS = [
     "#B51284",
     "#127D0C",
 ]
+
+SUPPORTED_DRIVERS = ["2130", "2208", "2209", "2660", "2240", "5160"]
+DRIVERS_SUPPORTING_TPFD = ["2240", "5160"]
+
+DEFAULT_REGISTER_VALUES = {
+    "TBL": (0, 3),
+    "TOFF": (1, 8),
+    "HSTRT": (0, 7),
+    "HEND": (2, 15),
+    "HSTRT_HEND_MAX": 16,
+    "TPFD": (0, 15),
+}
 
 
 class MeasurementMode(IntEnum):
@@ -579,7 +590,7 @@ class ChopperTune:
                 driver model and sense resistor, or None if the driver thus the
                 sense resistor cannot be detected.
         """
-        drivers = ["2130", "2208", "2209", "2660", "2240", "5160"]
+        drivers = SUPPORTED_DRIVERS
         stepper = f"stepper_{stepper}"
         resistor = None
         for driver in drivers:
@@ -702,22 +713,37 @@ class ChopperTune:
         driver: str,
         tpfd_min: int,
         tpfd_max: int,
-    ) -> None:
+    ) -> tuple[int, int]:
         """Validate the TPFD min and max values.
 
         Args:
             driver (str): The stepper driver model.
             tpfd_min (int): The TPFD min value.
             tpfd_max (int): The TPFD max value.
+
+        Returns:
+            tuple[int, int]: Validated tpfd_min and tpfd_max values.
         """
-        if tpfd_min != -1 or tpfd_max != -1:
-            if driver in ["2240", "5160"]:
-                if tpfd_min < 0 or tpfd_max < 0:
-                    self.printer.command_error("WARNING!!! Incorrect TPFD values")
-            else:
-                self.printer.command_error(
-                    f"WARNING!!! TMC{driver} don't support register TPFD"
-                )
+        if driver in DRIVERS_SUPPORTING_TPFD:
+            # limit the TPFD value to valid range
+            tpfd_min = max(
+                DEFAULT_REGISTER_VALUES["TPFD"][0],
+                min(tpfd_min, DEFAULT_REGISTER_VALUES["TPFD"][1]),
+            )
+            tpfd_max = min(
+                DEFAULT_REGISTER_VALUES["TPFD"][1],
+                max(tpfd_max, DEFAULT_REGISTER_VALUES["TPFD"][0]),
+            )
+            if tpfd_min > tpfd_max:
+                # reverse values if min is greater than max after validation
+                temp = tpfd_min
+                tpfd_min = tpfd_max
+                tpfd_max = temp
+        else:
+            # ignore TPFD if the driver doesn't support it
+            tpfd_min = tpfd_max = DEFAULT_REGISTER_VALUES["TPFD"][0]
+
+        return tpfd_min, tpfd_max
 
     def reset_sample_data(self) -> None:
         """Reset sample data."""
@@ -779,7 +805,7 @@ class ChopperTune:
                         f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
                     )
             elif (
-                not (field == "tpfd" and value == -1)
+                not (field == "tpfd" and self.driver not in DRIVERS_SUPPORTING_TPFD)
                 and self.registers[field.lower()] != value
             ):
                 self.gcode.run_script_from_command(
@@ -887,6 +913,10 @@ class ChopperTune:
         toff_max = toff_min = self.driver_settings[steppers[0]].get("driver_toff")
         hstrt_max = hstrt_min = self.driver_settings[steppers[0]].get("driver_hstrt")
         hend_max = hend_min = self.driver_settings[steppers[0]].get("driver_hend")
+        if self.driver in DRIVERS_SUPPORTING_TPFD:
+            tpfd_max = tpfd_min = self.driver_settings[steppers[0]].get("driver_tpfd")
+        else:
+            tpfd_max = tpfd_min = DEFAULT_REGISTER_VALUES["TPFD"][0]
 
         return (
             tbl_min,
@@ -897,6 +927,8 @@ class ChopperTune:
             hstrt_max,
             hend_min,
             hend_max,
+            tpfd_min,
+            tpfd_max,
         )
 
     def configure_speed_limits(
@@ -1201,7 +1233,9 @@ class ChopperTune:
             list[Accel_Measurement]: The measurement data samples.
         """
         # Start accel_chip data collection
-        with AccelerometerMeasure(accelerometer=self.accelerometer) as accelerometer_measurement:
+        with AccelerometerMeasure(
+            accelerometer=self.accelerometer
+        ) as accelerometer_measurement:
             next_coord = coord_generator.next(travel_distance)
             self.toolhead.manual_move(next_coord, speed)
         # Move to the initial position
@@ -1316,7 +1350,7 @@ class ChopperTune:
         accel_y = np.array([sample.accel_y for sample in samples]) - static_data[1]
         accel_z = np.array([sample.accel_z for sample in samples]) - static_data[2]
 
-        # calculate the sample rate
+        # calculate the sample rate
         duration = samples[-1].time - samples[0].time
         number_of_samples = len(samples)
         sample_rate = number_of_samples / duration
@@ -1344,17 +1378,17 @@ class ChopperTune:
         axis: str,
         current_min: None | int = None,
         current_max: None | int = None,
-        tbl_min: int = 0,
-        tbl_max: int = 3,
-        toff_min: int = 1,
-        toff_max: int = 8,
-        hstrt_hend_max: int = 16,
-        hstrt_min: int = 0,
-        hstrt_max: int = 7,
-        hend_min: int = 2,
-        hend_max: int = 15,
-        tpfd_min: int = -1,
-        tpfd_max: int = -1,
+        tbl_min: int = DEFAULT_REGISTER_VALUES["TBL"][0],
+        tbl_max: int = DEFAULT_REGISTER_VALUES["TBL"][1],
+        toff_min: int = DEFAULT_REGISTER_VALUES["TOFF"][0],
+        toff_max: int = DEFAULT_REGISTER_VALUES["TOFF"][1],
+        hstrt_hend_max: int = DEFAULT_REGISTER_VALUES["HSTRT_HEND_MAX"],
+        hstrt_min: int = DEFAULT_REGISTER_VALUES["HSTRT"][0],
+        hstrt_max: int = DEFAULT_REGISTER_VALUES["HSTRT"][1],
+        hend_min: int = DEFAULT_REGISTER_VALUES["HEND"][0],
+        hend_max: int = DEFAULT_REGISTER_VALUES["HEND"][1],
+        tpfd_min: int = DEFAULT_REGISTER_VALUES["TPFD"][0],
+        tpfd_max: int = DEFAULT_REGISTER_VALUES["TPFD"][1],
         min_speed: None | int = None,
         max_speed: None | int = None,
         speed_change_step: None | int = None,
@@ -1428,7 +1462,7 @@ class ChopperTune:
         self.registers["stepper_count"] = self.get_stepper_count(axis)
 
         self.driver, self.sense_resistor = self.detect_driver(stepper=axis)
-        self.validate_tpfd_values(self.driver, tpfd_min, tpfd_max)
+        tpfd_min, tpfd_max = self.validate_tpfd_values(self.driver, tpfd_min, tpfd_max)
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
@@ -1453,6 +1487,8 @@ class ChopperTune:
                 hstrt_max,
                 hend_min,
                 hend_max,
+                tpfd_min,
+                tpfd_max,
             ) = self.get_default_stepper_parameters(steppers)
 
         (min_speed, max_speed, speed_change_step) = self.configure_speed_limits(
@@ -1514,7 +1550,15 @@ class ChopperTune:
         if direction == -1:
             self.initial_direction = self.initial_direction * -1
 
-        self.toolhead.set_max_velocities(None, acceleration, None, None)
+        # try:
+        #     self.toolhead.set_max_velocities(None, acceleration, None, None)
+        # except AttributeError:
+        # This is either an older Klipper version or Kalico
+        self.gcode.run_script_from_command(
+            f"SET_VELOCITY_LIMIT ACCEL={acceleration}\n"
+            f"SET_VELOCITY_LIMIT ACCEL_TO_DECEL={acceleration}"
+        )
+        self.toolhead.wait_moves()
 
         # move away from the middle exactly half or a travel distance
         self.initial_position -= self.initial_direction * (travel_distance / 2)
@@ -1523,8 +1567,12 @@ class ChopperTune:
 
         # Measure accelerometer noise
         samples = self.get_static_acceleration()
-        self.static_acceleration_vector = self.calc_static_acceleration_magnitude(samples)
-        self.static_acceleration_magnitude = float(np.linalg.norm(self.static_acceleration_vector))
+        self.static_acceleration_vector = self.calc_static_acceleration_magnitude(
+            samples
+        )
+        self.static_acceleration_magnitude = float(
+            np.linalg.norm(self.static_acceleration_vector)
+        )
 
         # set the global start time here
         self.global_start_time = self.reactor.monotonic()
@@ -1600,25 +1648,26 @@ class ChopperTune:
         # Store data
         self.store_data(date_stamp=now)
 
-        # Save Config
-        self.save_configs(best_parameters)
+        if self.measurement_mode != MeasurementMode.Resonances:
+            # Save Config
+            self.save_configs(best_parameters)
 
-        # Compare best result with previous samples
-        if best_parameters and compare_with is not None:
-            sample_name = self.generate_sample_name(
-                best_parameters["current"],
-                best_parameters["tbl"],
-                best_parameters["toff"],
-                best_parameters["hstrt"],
-                best_parameters["hend"],
-                best_parameters["tpfd"],
-                best_parameters["speed"],
-            )
-            self.compare_results(
-                sample_name,
-                self.samples[sample_name],
-                compare_with,
-            )
+            # Compare best result with previous samples
+            if best_parameters and compare_with is not None:
+                sample_name = self.generate_sample_name(
+                    best_parameters["current"],
+                    best_parameters["tbl"],
+                    best_parameters["toff"],
+                    best_parameters["hstrt"],
+                    best_parameters["hend"],
+                    best_parameters["tpfd"],
+                    best_parameters["speed"],
+                )
+                self.compare_results(
+                    sample_name,
+                    self.samples[sample_name],
+                    compare_with,
+                )
 
         # reset samples related data
         self.total_expected_samples = -1
@@ -2074,7 +2123,7 @@ class ChopperTune:
         self.gcode.respond_info(f"-> Best HSTRT found: {best_params[3]}")
 
         # Finally search for TPFD if applicable
-        if self.driver in ["2240", "5160"]:
+        if self.driver in DRIVERS_SUPPORTING_TPFD:
             self.gcode.respond_info("Step 5: Optimizing TPFD...")
             best_params = self.progressive_search_loop(
                 param_min=self.tpfd_min,
@@ -2151,7 +2200,7 @@ class ChopperTune:
             f"driver_hstrt : {overall_best_params['hstrt']}\n"
             f"driver_hend  : {overall_best_params['hend']}\n"
         )
-        if self.driver in ["2240", "5160"]:
+        if self.driver in DRIVERS_SUPPORTING_TPFD:
             result_message += f"driver_tpfd : {overall_best_params['tpfd']}"
         self.gcode.respond_info(result_message)
 
@@ -2180,8 +2229,10 @@ class ChopperTune:
                 if field == "speed":
                     continue  # skip speed field
 
-                if field == "tpfd" and self.driver not in ["2240", "5160"]:
-                    continue  # skip tpfd for unsupported drivers
+                if field == "tpfd" and (
+                    value == -1 or self.driver not in DRIVERS_SUPPORTING_TPFD
+                ):
+                    continue  # skip tpfd for unsupported drivers and if the value is -1
 
                 field_name = f"driver_{field}" if field != "current" else "run_current"
                 value = str(value) if field != "current" else f"{value / 1000:0.2f}"
@@ -2306,23 +2357,25 @@ class ChopperTune:
         try:
             axis = gcmd.get("AXIS", "x").lower()
             direction = gcmd.get_int("DIRECTION", 1)
-            # search_method can be brute_force or adaptive
+            # search_method can be brute_force, adaptive or progressive
             search_method = SearchMethod.to_method(
-                gcmd.get("SEARCH_METHOD", "brute_force").lower()
+                gcmd.get("SEARCH_METHOD", "progressive").lower()
             )
             current_min = gcmd.get_float("CURRENT_MIN_MA", None)
             current_max = gcmd.get_float("CURRENT_MAX_MA", None)
-            tbl_min = gcmd.get_int("TBL_MIN", 0)
-            tbl_max = gcmd.get_int("TBL_MAX", 3)
-            toff_min = gcmd.get_int("TOFF_MIN", 1)
-            toff_max = gcmd.get_int("TOFF_MAX", 8)
-            hstrt_hend_max = gcmd.get_int("HSTRT_HEND_MAX", 16)
-            hstrt_min = gcmd.get_int("HSTRT_MIN", 0)
-            hstrt_max = gcmd.get_int("HSTRT_MAX", 7)
-            hend_min = gcmd.get_int("HEND_MIN", 2)
-            hend_max = gcmd.get_int("HEND_MAX", 15)
-            tpfd_min = gcmd.get_int("TPFD_MIN", -1)
-            tpfd_max = gcmd.get_int("TPFD_MAX", -1)
+            tbl_min = gcmd.get_int("TBL_MIN", DEFAULT_REGISTER_VALUES["TBL"][0])
+            tbl_max = gcmd.get_int("TBL_MAX", DEFAULT_REGISTER_VALUES["TBL"][1])
+            toff_min = gcmd.get_int("TOFF_MIN", DEFAULT_REGISTER_VALUES["TOFF"][0])
+            toff_max = gcmd.get_int("TOFF_MAX", DEFAULT_REGISTER_VALUES["TOFF"][1])
+            hstrt_hend_max = gcmd.get_int(
+                "HSTRT_HEND_MAX", DEFAULT_REGISTER_VALUES["HSTRT_HEND_MAX"]
+            )
+            hstrt_min = gcmd.get_int("HSTRT_MIN", DEFAULT_REGISTER_VALUES["HSTRT"][0])
+            hstrt_max = gcmd.get_int("HSTRT_MAX", DEFAULT_REGISTER_VALUES["HSTRT"][1])
+            hend_min = gcmd.get_int("HEND_MIN", DEFAULT_REGISTER_VALUES["HEND"][0])
+            hend_max = gcmd.get_int("HEND_MAX", DEFAULT_REGISTER_VALUES["HEND"][1])
+            tpfd_min = gcmd.get_int("TPFD_MIN", DEFAULT_REGISTER_VALUES["TPFD"][0])
+            tpfd_max = gcmd.get_int("TPFD_MAX", DEFAULT_REGISTER_VALUES["TPFD"][1])
             min_speed = gcmd.get_float("MIN_SPEED", None)
             max_speed = gcmd.get_float("MAX_SPEED", None)
             speed_change_step = gcmd.get_float("SPEED_CHANGE_STEP", None)
@@ -2371,7 +2424,7 @@ class ChopperTune:
                 run_plotter=run_plotter,
                 compare_with=compare_with,
             )
-        except Exception:
+        except Exception as e:
             self.gcode.respond_info(traceback.format_exc())
 
     def cmd_chopper_tune_debug(self, gcmd: GCodeCommand) -> bool:
