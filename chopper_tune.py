@@ -539,6 +539,8 @@ class ChopperTune:
         self.tbl_max = None
         self.toff_min = None
         self.toff_max = None
+        self.tpfd_min = None
+        self.tpfd_max = None
         self.min_speed = None
         self.max_speed = None
         self.speed_change_step = None
@@ -1434,11 +1436,14 @@ class ChopperTune:
         self.tbl_max = tbl_max
         self.toff_min = toff_min
         self.toff_max = toff_max
+        self.tpfd_min = tpfd_min
+        self.tpfd_max = tpfd_max
 
         self.bounds = [
             (self.extra_hyst_min, self.extra_hyst_max),
             (self.tbl_min, self.tbl_max),
             (self.toff_min, self.toff_max),
+            (self.tpfd_min, self.tpfd_max),
         ]
         best_parameters = self.search_best_parameters()
         if self.measurement_mode == MeasurementMode.Resonances:
@@ -1749,6 +1754,7 @@ class ChopperTune:
             slice(self.extra_hyst_min, self.extra_hyst_max + 1, 1),
             slice(self.tbl_min, self.tbl_max + 1, 1),
             slice(self.toff_min, self.toff_max + 1, 1),
+            slice(self.tpfd_min, self.tpfd_max + 1, 1),
             slice(
                 int(self.min_speed * 100),
                 int(self.max_speed * 100) + 1,
@@ -1760,6 +1766,7 @@ class ChopperTune:
         total_eh_steps = self.extra_hyst_max - self.extra_hyst_min + 1
         total_tbl_steps = self.tbl_max - self.tbl_min + 1
         total_toff_steps = self.toff_max - self.toff_min + 1
+        total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
         total_speed_steps = (
             int(self.max_speed * 100) - int(self.min_speed * 100)
         ) // int(self.speed_change_step * 100) + 1
@@ -1767,6 +1774,7 @@ class ChopperTune:
             total_eh_steps
             * total_tbl_steps
             * total_toff_steps
+            * total_tpfd_steps
             * total_speed_steps
         )
 
@@ -1792,6 +1800,7 @@ class ChopperTune:
             (self.extra_hyst_min, self.extra_hyst_max),
             (self.tbl_min, self.tbl_max),
             (self.toff_min, self.toff_max),
+            (self.tpfd_min, self.tpfd_max),
             (self.min_speed * 100, self.max_speed * 100),
         ]
 
