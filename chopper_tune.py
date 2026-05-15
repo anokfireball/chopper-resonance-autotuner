@@ -740,20 +740,20 @@ class ChopperTune:
         ):
             return  # no change needed
 
-        stepper = steppers[0]
-        gcode_cmd = (
-            f"AUTOTUNE_TMC STEPPER={stepper} "
-            f"EXTRA_HYSTERESIS={extra_hysteresis} "
-            f"TBL={tbl} TOFF={toff}"
-        )
-        stepper_driver_cfg = self.driver_settings.get(stepper, {})
-        if tpfd is not None and "driver_tpfd" in stepper_driver_cfg:
-            gcode_cmd += f" TPFD={tpfd}"
+        for stepper in steppers:
+            gcode_cmd = (
+                f"AUTOTUNE_TMC STEPPER={stepper} "
+                f"EXTRA_HYSTERESIS={extra_hysteresis} "
+                f"TBL={tbl} TOFF={toff}"
+            )
+            stepper_driver_cfg = self.driver_settings.get(stepper, {})
+            if tpfd is not None and "driver_tpfd" in stepper_driver_cfg:
+                gcode_cmd += f" TPFD={tpfd}"
 
-        if self.debug:
-            self.gcode.respond_info(gcode_cmd)
-        self.gcode.run_script_from_command(gcode_cmd)
-        
+            if self.debug:
+                self.gcode.respond_info(gcode_cmd)
+            self.gcode.run_script_from_command(gcode_cmd)
+
         self.registers["extra_hysteresis"] = extra_hysteresis
         self.registers["tbl"] = tbl
         self.registers["toff"] = toff
