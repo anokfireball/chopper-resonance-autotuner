@@ -746,7 +746,8 @@ class ChopperTune:
             f"EXTRA_HYSTERESIS={extra_hysteresis} "
             f"TBL={tbl} TOFF={toff}"
         )
-        if tpfd is not None and self.driver_type in ["tmc2240", "tmc5160"]:
+        stepper_driver_cfg = self.driver_settings.get(stepper, {})
+        if tpfd is not None and "driver_tpfd" in stepper_driver_cfg:
             gcode_cmd += f" TPFD={tpfd}"
 
         if self.debug:
@@ -1008,6 +1009,8 @@ class ChopperTune:
         tbl_max: int,
         toff_min: int,
         toff_max: int,
+        tpfd_min: int,
+        tpfd_max: int,
         min_speed: float,
         max_speed: float,
         speed_change_step: float,
@@ -1046,7 +1049,8 @@ class ChopperTune:
                 f"{speed_change_step:.2f} mm/s step\n"
                 f"EXTRA_HYSTERESIS  : {extra_hyst_min}\n"
                 f"TBL               : {tbl_min}\n"
-                f"TOFF              : {toff_min}"
+                f"TOFF              : {toff_min}\n"
+                f"TPFD              : {tpfd_min}"
             )
         else:
             self.gcode.respond_info(
@@ -1061,7 +1065,8 @@ class ChopperTune:
                 f"iterations        : {iterations}\n"
                 f"EXTRA_HYSTERESIS  : {extra_hyst_min} --> {extra_hyst_max}\n"
                 f"TBL               : {tbl_min} --> {tbl_max}\n"
-                f"TOFF              : {toff_min} --> {toff_max}"
+                f"TOFF              : {toff_min} --> {toff_max}\n"
+                f"TPFD              : {tpfd_min} --> {tpfd_max}"
             )
 
     def home(self) -> None:
@@ -1356,6 +1361,8 @@ class ChopperTune:
             tbl_max,
             toff_min,
             toff_max,
+            tpfd_min,
+            tpfd_max,
             min_speed,
             max_speed,
             speed_change_step,
