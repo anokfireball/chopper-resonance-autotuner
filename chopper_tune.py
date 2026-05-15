@@ -592,6 +592,10 @@ class ChopperTune:
 
         return None, None
 
+    def has_secondary_x_stepper(self) -> bool:
+        """Check whether the printer exposes a secondary X stepper."""
+        return "stepper_x1" in self.settings
+
     def get_axes_and_steppers(
         self, axis: str
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -617,7 +621,10 @@ class ChopperTune:
             if axis in ("x", "y"):
                 if axis == "x":
                     axes = ("x", "y")
-                    steppers = ("stepper_x", "stepper_y")
+                    if self.has_secondary_x_stepper():
+                        steppers = ("stepper_x", "stepper_x1")
+                    else:
+                        steppers = ("stepper_x", "stepper_y")
                 elif axis == "y":
                     axes = ("y", "x")
                     steppers = ("stepper_y", "stepper_x")
