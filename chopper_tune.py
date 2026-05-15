@@ -71,6 +71,7 @@ DEFAULT_REGISTER_VALUES = {
     "TBL": (0, 3),
     "TOFF": (1, 8),
     "EXTRA_HYSTERESIS": (0, 8),
+    "TPFD": (0, 4),
 }
 
 
@@ -718,6 +719,7 @@ class ChopperTune:
         extra_hysteresis: int,
         tbl: int,
         toff: int,
+        tpfd: int = None,
     ) -> None:
         """Apply autotune parameters via AUTOTUNE_TMC command.
 
@@ -726,29 +728,34 @@ class ChopperTune:
             extra_hysteresis (int): The extra hysteresis value.
             tbl (int): The TBL value.
             toff (int): The TOFF value.
+            tpfd (int): The TPFD value (optional, for supported drivers).
         """
         if (
             self.registers["extra_hysteresis"] == extra_hysteresis
             and self.registers["tbl"] == tbl
             and self.registers["toff"] == toff
+            and self.registers.get("tpfd") == tpfd
         ):
             return  # no change needed
 
         stepper = steppers[0]
-        if self.debug:
-            self.gcode.respond_info(
-                f"AUTOTUNE_TMC STEPPER={stepper} "
-                f"EXTRA_HYSTERESIS={extra_hysteresis} "
-                f"TBL={tbl} TOFF={toff}"
-            )
-        self.gcode.run_script_from_command(
+        gcode_cmd = (
             f"AUTOTUNE_TMC STEPPER={stepper} "
             f"EXTRA_HYSTERESIS={extra_hysteresis} "
             f"TBL={tbl} TOFF={toff}"
         )
+        if tpfd is not None and self.driver_type in ["tmc2240", "tmc5160"]:
+            gcode_cmd += f" TPFD={tpfd}"
+
+        if self.debug:
+            self.gcode.respond_info(gcode_cmd)
+        self.gcode.run_script_from_command(gcode_cmd)
+        
         self.registers["extra_hysteresis"] = extra_hysteresis
         self.registers["tbl"] = tbl
         self.registers["toff"] = toff
+        if tpfd is not None:
+            self.registers["tpfd"] = tpfd
 
     def get_stepper_count(self, axis: str) -> int:
         """Get the stepper count of the given axis.
@@ -788,25 +795,26 @@ class ChopperTune:
     def get_default_autotune_parameters(
         self,
         steppers: list[str],
-    ) -> tuple[int, int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int, int, int, int]:
         """Return default autotune parameters from current printer config.
 
         Reads extra_hysteresis from [autotune_tmc stepper_x] and
-        tbl/toff from the TMC driver settings.
+        tbl/toff/tpfd from the TMC driver settings.
 
         Args:
             steppers (list[str]): The main and secondary stepper.
 
         Returns:
-            tuple[int, int, int, int, int, int]: extra_hyst_min, extra_hyst_max,
-                tbl_min, tbl_max, toff_min, toff_max
+            tuple[int, int, int, int, int, int, int, int]: extra_hyst_min, extra_hyst_max,
+                tbl_min, tbl_max, toff_min, toff_max, tpfd_min, tpfd_max
         """
         tbl_max = tbl_min = self.driver_settings[steppers[0]].get("driver_tbl")
         toff_max = toff_min = self.driver_settings[steppers[0]].get("driver_toff")
+        tpfd_max = tpfd_min = self.driver_settings[steppers[0]].get("driver_tpfd", 0)
         autotune_cfg = self.settings.get(f"autotune_tmc {steppers[0]}", {})
         eh = int(autotune_cfg.get("extra_hysteresis", 0))
         extra_hyst_min = extra_hyst_max = eh
-        return (extra_hyst_min, extra_hyst_max, tbl_min, tbl_max, toff_min, toff_max)
+        return (extra_hyst_min, extra_hyst_max, tbl_min, tbl_max, toff_min, toff_max, tpfd_min, tpfd_max)
 
     def configure_speed_limits(
         self,
@@ -1241,6 +1249,8 @@ class ChopperTune:
         tbl_max: int = DEFAULT_REGISTER_VALUES["TBL"][1],
         toff_min: int = DEFAULT_REGISTER_VALUES["TOFF"][0],
         toff_max: int = DEFAULT_REGISTER_VALUES["TOFF"][1],
+        tpfd_min: int = DEFAULT_REGISTER_VALUES["TPFD"][0],
+        tpfd_max: int = DEFAULT_REGISTER_VALUES["TPFD"][1],
         min_speed: None | float = None,
         max_speed: None | float = None,
         speed_change_step: None | float = None,
@@ -1310,6 +1320,8 @@ class ChopperTune:
                 tbl_max,
                 toff_min,
                 toff_max,
+                tpfd_min,
+                tpfd_max,
             ) = self.get_default_autotune_parameters(steppers)
 
         (min_speed, max_speed, speed_change_step) = self.configure_speed_limits(
@@ -1483,6 +1495,7 @@ class ChopperTune:
         extra_hysteresis: int,
         tbl: int,
         toff: int,
+        tpfd: int,
         speed: float,
     ) -> str:
         """Generate a sample name based on the autotune parameters.
@@ -1491,6 +1504,7 @@ class ChopperTune:
             extra_hysteresis (int): The extra hysteresis value.
             tbl (int): The TBL value.
             toff (int): The TOFF value.
+            tpfd (int): The TPFD value.
             speed (float): The speed value.
 
         Returns:
@@ -1500,6 +1514,7 @@ class ChopperTune:
             f"eh={extra_hysteresis}_"
             f"tbl={tbl}_"
             f"toff={toff}_"
+            f"tpfd={tpfd}_"
             f"speed={speed:.2f}"
         )
 
@@ -1628,13 +1643,13 @@ class ChopperTune:
 
         Args:
             params (list[float]): The parameters to optimize.
-                Order: [extra_hysteresis, tbl, toff, speed*100]
+                Order: [extra_hysteresis, tbl, toff, tpfd, speed*100]
 
         Returns:
             float: The average measured vibrations.
         """
         self.gcode.respond_info("-------------------------------")
-        extra_hysteresis, tbl, toff, speed = [round(p) for p in params]
+        extra_hysteresis, tbl, toff, tpfd, speed = [round(p) for p in params]
 
         # convert speed back to the correct range
         speed = float(speed) / 100
@@ -1643,15 +1658,17 @@ class ChopperTune:
             f"extra_hysteresis={extra_hysteresis} "
             f"tbl={tbl} "
             f"toff={toff} "
+            f"tpfd={tpfd} "
             f"speed={speed:.2f}"
         )
 
         # Apply autotune parameters
-        self.apply_autotune(self.steppers, extra_hysteresis, tbl, toff)
+        self.apply_autotune(self.steppers, extra_hysteresis, tbl, toff, tpfd)
         sample_name = self.generate_sample_name(
             extra_hysteresis=extra_hysteresis,
             tbl=tbl,
             toff=toff,
+            tpfd=tpfd,
             speed=speed,
         )
         if sample_name in self.samples:
@@ -1813,20 +1830,23 @@ class ChopperTune:
             "Starting Progressive (Trinamic Flowchart) Optimization..."
         )
 
-        # params order: [extra_hysteresis, tbl, toff, speed*100]
+        # params order: [extra_hysteresis, tbl, toff, tpfd, speed*100]
         best_toff = self.toff_min if self.toff_min > 0 else 3
         best_tbl = 2
         best_eh = self.extra_hyst_min
+        best_tpfd = self.tpfd_min
         best_params = [
             best_eh,
             best_tbl,
             best_toff,
+            best_tpfd,
             int(self.min_speed * 100),
         ]
         self.total_expected_samples = (
             (self.toff_max - self.toff_min + 1)
             + (self.tbl_max - self.tbl_min + 1)
             + (self.extra_hyst_max - self.extra_hyst_min + 1)
+            + (self.tpfd_max - self.tpfd_min + 1)
         )
 
         self.gcode.respond_info("Step 1: Optimizing TOFF...")
@@ -1856,6 +1876,15 @@ class ChopperTune:
         )
         self.gcode.respond_info(f"-> Best EXTRA_HYSTERESIS found: {best_params[0]}")
 
+        self.gcode.respond_info("Step 4: Optimizing TPFD...")
+        best_params = self.progressive_search_loop(
+            param_min=self.tpfd_min,
+            param_max=self.tpfd_max,
+            param_index=3,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best TPFD found: {best_params[3]}")
+
         return best_params
 
     def search_best_parameters(self) -> list[int]:
@@ -1879,7 +1908,7 @@ class ChopperTune:
             )
 
         # set initial autotune parameters
-        self.apply_autotune(self.steppers, self.extra_hyst_min, self.tbl_min, self.toff_min)
+        self.apply_autotune(self.steppers, self.extra_hyst_min, self.tbl_min, self.toff_min, self.tpfd_min)
 
         if self.search_method == SearchMethod.BruteForce:
             best_params = self.perform_brute_force_search()
@@ -1893,7 +1922,8 @@ class ChopperTune:
             "extra_hysteresis": best_params[0],
             "tbl": best_params[1],
             "toff": best_params[2],
-            "speed": float(best_params[3]) / 100,
+            "tpfd": best_params[3],
+            "speed": float(best_params[4]) / 100,
         }
 
         duration = self.reactor.monotonic() - start_time
@@ -1907,7 +1937,8 @@ class ChopperTune:
             f"speed                  : {overall_best_params['speed']:.2f} mm/s\n"
             f"extra_hysteresis       : {overall_best_params['extra_hysteresis']}\n"
             f"driver_TBL             : {overall_best_params['tbl']}\n"
-            f"driver_TOFF            : {overall_best_params['toff']}"
+            f"driver_TOFF            : {overall_best_params['toff']}\n"
+            f"driver_TPFD            : {overall_best_params['tpfd']}"
         )
         self.gcode.respond_info(result_message)
 
@@ -1917,6 +1948,7 @@ class ChopperTune:
             overall_best_params["extra_hysteresis"],
             overall_best_params["tbl"],
             overall_best_params["toff"],
+            overall_best_params["tpfd"],
         )
 
         return overall_best_params
@@ -1945,6 +1977,10 @@ class ChopperTune:
             if "toff" in best_parameters:
                 self.configfile.set(
                     section, "driver_TOFF", str(best_parameters["toff"])
+                )
+            if "tpfd" in best_parameters:
+                self.configfile.set(
+                    section, "driver_TPFD", str(best_parameters["tpfd"])
                 )
 
         self.gcode.respond_info(
@@ -2067,6 +2103,8 @@ class ChopperTune:
             tbl_max = gcmd.get_int("TBL_MAX", DEFAULT_REGISTER_VALUES["TBL"][1])
             toff_min = gcmd.get_int("TOFF_MIN", DEFAULT_REGISTER_VALUES["TOFF"][0])
             toff_max = gcmd.get_int("TOFF_MAX", DEFAULT_REGISTER_VALUES["TOFF"][1])
+            tpfd_min = gcmd.get_int("TPFD_MIN", DEFAULT_REGISTER_VALUES["TPFD"][0])
+            tpfd_max = gcmd.get_int("TPFD_MAX", DEFAULT_REGISTER_VALUES["TPFD"][1])
             min_speed = gcmd.get_float("MIN_SPEED", None)
             max_speed = gcmd.get_float("MAX_SPEED", None)
             speed_change_step = gcmd.get_float("SPEED_CHANGE_STEP", None)
@@ -2098,6 +2136,8 @@ class ChopperTune:
                 tbl_max=tbl_max,
                 toff_min=toff_min,
                 toff_max=toff_max,
+                tpfd_min=tpfd_min,
+                tpfd_max=tpfd_max,
                 min_speed=min_speed,
                 max_speed=max_speed,
                 speed_change_step=speed_change_step,
