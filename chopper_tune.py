@@ -71,7 +71,7 @@ DEFAULT_REGISTER_VALUES = {
     "TBL": (0, 3),
     "TOFF": (1, 8),
     "EXTRA_HYSTERESIS": (0, 8),
-    "TPFD": (0, 4),
+    "TPFD": (0, 15),
 }
 
 
