@@ -70,10 +70,7 @@ DRIVERS_SUPPORTING_TPFD = ["2240", "5160"]
 DEFAULT_REGISTER_VALUES = {
     "TBL": (0, 3),
     "TOFF": (1, 8),
-    "HSTRT": (0, 7),
-    "HEND": (2, 15),
-    "HSTRT_HEND_MAX": 16,
-    "TPFD": (0, 15),
+    "EXTRA_HYSTERESIS": (0, 8),
 }
 
 
@@ -497,20 +494,15 @@ class ChopperTune:
             "stepper_count": 0,
             "tbl": -1,
             "toff": -1,
-            "hend": -1,
-            "hstrt": -1,
-            "tpfd": -1,
-            "curr": -1,
+            "extra_hysteresis": -1,
         }
 
         # config values
         self.debug = config.getboolean("debug", False)
         self.inset = config.getfloat("inset", 10)
-        self.current_change_step = config.getint("current_change_step", 25)
         self.measure_time = config.getint("measure_time", 1250)
         self.required_rpm = config.getfloatlist("required_rpm", [37.5, 150, 1.5])
         self.delay = config.getfloat("delay", 500)
-        self.fclk = config.getint("fclk", 12)
 
         self.kinematics = config.getsection("printer").get("kinematics")
 
@@ -533,7 +525,6 @@ class ChopperTune:
         self.coord_generator = None
         self.accel_chip_name = None
         self.steppers = None
-        self.current = None
         self.static_acceleration_vector = None
         self.static_acceleration_magnitude = None
         self.initial_position = None
@@ -541,19 +532,12 @@ class ChopperTune:
 
         # Bounds
         self.bounds = []
-        self.current_min = None
-        self.current_max = None
+        self.extra_hyst_min = None
+        self.extra_hyst_max = None
         self.tbl_min = None
         self.tbl_max = None
         self.toff_min = None
         self.toff_max = None
-        self.hstrt_min = None
-        self.hstrt_max = None
-        self.hstrt_hend_max = None
-        self.hend_min = None
-        self.hend_max = None
-        self.tpfd_min = None
-        self.tpfd_max = None
         self.min_speed = None
         self.max_speed = None
         self.speed_change_step = None
@@ -708,43 +692,6 @@ class ChopperTune:
 
         return acceleration, travel_speed
 
-    def validate_tpfd_values(
-        self,
-        driver: str,
-        tpfd_min: int,
-        tpfd_max: int,
-    ) -> tuple[int, int]:
-        """Validate the TPFD min and max values.
-
-        Args:
-            driver (str): The stepper driver model.
-            tpfd_min (int): The TPFD min value.
-            tpfd_max (int): The TPFD max value.
-
-        Returns:
-            tuple[int, int]: Validated tpfd_min and tpfd_max values.
-        """
-        if driver in DRIVERS_SUPPORTING_TPFD:
-            # limit the TPFD value to valid range
-            tpfd_min = max(
-                DEFAULT_REGISTER_VALUES["TPFD"][0],
-                min(tpfd_min, DEFAULT_REGISTER_VALUES["TPFD"][1]),
-            )
-            tpfd_max = min(
-                DEFAULT_REGISTER_VALUES["TPFD"][1],
-                max(tpfd_max, DEFAULT_REGISTER_VALUES["TPFD"][0]),
-            )
-            if tpfd_min > tpfd_max:
-                # reverse values if min is greater than max after validation
-                temp = tpfd_min
-                tpfd_min = tpfd_max
-                tpfd_max = temp
-        else:
-            # ignore TPFD if the driver doesn't support it
-            tpfd_min = tpfd_max = DEFAULT_REGISTER_VALUES["TPFD"][0]
-
-        return tpfd_min, tpfd_max
-
     def reset_sample_data(self) -> None:
         """Reset sample data."""
         self.total_expected_samples = -1
@@ -762,59 +709,46 @@ class ChopperTune:
             "stepper_count": 0,
             "tbl": -1,
             "toff": -1,
-            "hend": -1,
-            "hstrt": -1,
-            "tpfd": -1,
-            "curr": -1,
+            "extra_hysteresis": -1,
         }
 
-    def apply_registers(
+    def apply_autotune(
         self,
         steppers: list[str],
-        field: str,
-        value: int,
+        extra_hysteresis: int,
+        tbl: int,
+        toff: int,
     ) -> None:
-        """Apply registers.
+        """Apply autotune parameters via AUTOTUNE_TMC command.
 
         Args:
-            steppers (list[str]): The name of the steppers to set the register
-                field values of.
-            field (str): The name of the field to set the value of.
-            value (int): The value to set to.
+            steppers (list[str]): The steppers to apply parameters to.
+            extra_hysteresis (int): The extra hysteresis value.
+            tbl (int): The TBL value.
+            toff (int): The TOFF value.
         """
-        if field is None or value is None:
-            return
+        if (
+            self.registers["extra_hysteresis"] == extra_hysteresis
+            and self.registers["tbl"] == tbl
+            and self.registers["toff"] == toff
+        ):
+            return  # no change needed
 
-        stepper = steppers[0]  # just update the main stepper
-        for stepper_index in range(self.registers["stepper_count"]):
-            # stepper_x,
-            # stepper_y,
-            # stepper_z, stepper_z1, stepper_z2, stepper_z3, ...
-            # don't add index for the first stepper
-            stepper_index = str(stepper_index) if stepper_index > 0 else ""
-            if self.debug:
-                self.gcode.respond_info(
-                    f"Setting {field.lower()} "
-                    f"from {self.registers[field]} to {value} "
-                    f"on {stepper}{stepper_index}"
-                )
-
-            if field.lower() == "curr":
-                if self.registers[field.lower()] != value:
-                    self.gcode.run_script_from_command(
-                        f"SET_TMC_CURRENT STEPPER={stepper} CURRENT={value / 1000}"
-                    )
-            elif (
-                not (field == "tpfd" and self.driver not in DRIVERS_SUPPORTING_TPFD)
-                and self.registers[field.lower()] != value
-            ):
-                self.gcode.run_script_from_command(
-                    "SET_TMC_FIELD "
-                    f"STEPPER={stepper}{stepper_index} "
-                    f"FIELD={field} VALUE={value}"
-                )
-        # store the last applied value
-        self.registers[field.lower()] = value
+        stepper = steppers[0]
+        if self.debug:
+            self.gcode.respond_info(
+                f"AUTOTUNE_TMC STEPPER={stepper} "
+                f"EXTRA_HYSTERESIS={extra_hysteresis} "
+                f"TBL={tbl} TOFF={toff}"
+            )
+        self.gcode.run_script_from_command(
+            f"AUTOTUNE_TMC STEPPER={stepper} "
+            f"EXTRA_HYSTERESIS={extra_hysteresis} "
+            f"TBL={tbl} TOFF={toff}"
+        )
+        self.registers["extra_hysteresis"] = extra_hysteresis
+        self.registers["tbl"] = tbl
+        self.registers["toff"] = toff
 
     def get_stepper_count(self, axis: str) -> int:
         """Get the stepper count of the given axis.
@@ -851,85 +785,28 @@ class ChopperTune:
         self.gcode.respond_info(f"Selected {accel_chip_name} for accelerometer")
         return accel_chip_name
 
-    def get_current_range(
-        self,
-        measurement_mode: MeasurementMode,
-        current_min: None | int,
-        current_max: None | int,
-        steppers: list[str],
-    ) -> tuple[int, int]:
-        """Get run current.
-
-        Args:
-            measurement_mode (MeasurementMode): The measurement mode.
-            current_min (None | int): The minimum current value.
-            current_max (None | int): The maximum current value.
-            steppers (list[str]): The main and secondary stepper.
-
-        Returns:
-            tuple[int, int]: The minimum and maximum current values.
-        """
-        # Select run_current
-        run_current = int(
-            float(self.driver_settings[steppers[0]].get("run_current")) * 1000
-        )
-        if current_min is None:
-            current_min = run_current
-            if self.debug:
-                self.gcode.respond_info(
-                    f"Set default run_current: {current_min} mA to run_current_min"
-                )
-        else:
-            current_min = int(current_min)
-
-        if current_max is None:
-            current_max = run_current
-            if self.debug:
-                self.gcode.respond_info(
-                    f"Set default run_current: {current_max} mA to run_current_max"
-                )
-        else:
-            current_max = int(current_max)
-
-        if measurement_mode == MeasurementMode.Resonances:
-            current_max = current_min
-
-        return current_min, current_max
-
-    def get_default_stepper_parameters(
+    def get_default_autotune_parameters(
         self,
         steppers: list[str],
-    ) -> tuple[int, int, int, int, int, int, int, int]:
-        """Return default stepper parameters.
+    ) -> tuple[int, int, int, int, int, int]:
+        """Return default autotune parameters from current printer config.
+
+        Reads extra_hysteresis from [autotune_tmc stepper_x] and
+        tbl/toff from the TMC driver settings.
 
         Args:
             steppers (list[str]): The main and secondary stepper.
 
         Returns:
-            tuple[int, int, int, int, int, int, int, int]: The default stepper
-                parameters.
+            tuple[int, int, int, int, int, int]: extra_hyst_min, extra_hyst_max,
+                tbl_min, tbl_max, toff_min, toff_max
         """
         tbl_max = tbl_min = self.driver_settings[steppers[0]].get("driver_tbl")
         toff_max = toff_min = self.driver_settings[steppers[0]].get("driver_toff")
-        hstrt_max = hstrt_min = self.driver_settings[steppers[0]].get("driver_hstrt")
-        hend_max = hend_min = self.driver_settings[steppers[0]].get("driver_hend")
-        if self.driver in DRIVERS_SUPPORTING_TPFD:
-            tpfd_max = tpfd_min = self.driver_settings[steppers[0]].get("driver_tpfd")
-        else:
-            tpfd_max = tpfd_min = DEFAULT_REGISTER_VALUES["TPFD"][0]
-
-        return (
-            tbl_min,
-            tbl_max,
-            toff_min,
-            toff_max,
-            hstrt_min,
-            hstrt_max,
-            hend_min,
-            hend_max,
-            tpfd_min,
-            tpfd_max,
-        )
+        autotune_cfg = self.settings.get(f"autotune_tmc {steppers[0]}", {})
+        eh = int(autotune_cfg.get("extra_hysteresis", 0))
+        extra_hyst_min = extra_hyst_max = eh
+        return (extra_hyst_min, extra_hyst_max, tbl_min, tbl_max, toff_min, toff_max)
 
     def configure_speed_limits(
         self,
@@ -1115,18 +992,12 @@ class ChopperTune:
 
     def display_process_summary(
         self,
-        current_min: int,
-        current_max: int,
+        extra_hyst_min: int,
+        extra_hyst_max: int,
         tbl_min: int,
         tbl_max: int,
         toff_min: int,
         toff_max: int,
-        hstrt_min: int,
-        hstrt_max: int,
-        hend_min: int,
-        hend_max: int,
-        tpfd_min: int,
-        tpfd_max: int,
         min_speed: float,
         max_speed: float,
         speed_change_step: float,
@@ -1138,18 +1009,12 @@ class ChopperTune:
         """Display process information.
 
         Args:
-            current_min (int): The minimum current value.
-            current_max (int): The maximum current value.
+            extra_hyst_min (int): The minimum extra hysteresis value.
+            extra_hyst_max (int): The maximum extra hysteresis value.
             tbl_min (int): The minimum TBL value.
             tbl_max (int): The maximum TBL value.
             toff_min (int): The minimum TOFF value.
             toff_max (int): The maximum TOFF value.
-            hstrt_min (int): The minimum HSTRT value.
-            hstrt_max (int): The maximum HSTRT value.
-            hend_min (int): The minimum HEND value.
-            hend_max (int): The maximum HEND value.
-            tpfd_min (int): The minimum TPFD value.
-            tpfd_max (int): The maximum TPFD value.
             min_speed (float): The minimum speed value.
             max_speed (float): The maximum speed value.
             speed_change_step (float): The speed change step value.
@@ -1159,7 +1024,6 @@ class ChopperTune:
             travel_distance (float): The travel distance value.
         """
         if self.measurement_mode == MeasurementMode.Resonances:
-            # Resonance measurement mode uses the minimum values for registers.
             self.gcode.respond_info(
                 f"Final max travel distance = {travel_distance:.1f} mm, "
                 f"position min = {a_axis_min:.1f}, "
@@ -1167,14 +1031,12 @@ class ChopperTune:
             )
             self.gcode.respond_info(
                 f"Start find resonances mode\n"
-                f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.2f} --> {max_speed:.2f} mm/s with "
+                f"Method            : {search_method}\n"
+                f"speed             : {min_speed:.2f} --> {max_speed:.2f} mm/s with "
                 f"{speed_change_step:.2f} mm/s step\n"
-                f"current    : {current_min} mA\n"
-                f"TBL        : {tbl_min}\n"
-                f"TOFF       : {toff_min}\n"
-                f"HSTRT      : {hstrt_min}\n"
-                f"HEND       : {hend_min}"
+                f"EXTRA_HYSTERESIS  : {extra_hyst_min}\n"
+                f"TBL               : {tbl_min}\n"
+                f"TOFF              : {toff_min}"
             )
         else:
             self.gcode.respond_info(
@@ -1183,16 +1045,13 @@ class ChopperTune:
                 f"traveling = {a_axis_min:.1f} --> {travel_distance + a_axis_min:.1f}"
             )
             self.gcode.respond_info(
-                "Start of register enumeration mode\n"
-                f"Method     : {search_method}\n"
-                f"speed      : {min_speed:.2f} --> {max_speed:.2f} mm/s\n"
-                f"current    : {current_min} --> {current_max} mA\n"
-                f"iterations : {iterations}\n"
-                f"TBL        : {tbl_min} --> {tbl_max}\n"
-                f"TOFF       : {toff_min} --> {toff_max}\n"
-                f"HSTRT      : {hstrt_min} --> {hstrt_max}\n"
-                f"HEND       : {hend_min} --> {hend_max}\n"
-                f"TPFD       : {tpfd_min} --> {tpfd_max}"
+                "Start autotune parameter sweep\n"
+                f"Method            : {search_method}\n"
+                f"speed             : {min_speed:.2f} --> {max_speed:.2f} mm/s\n"
+                f"iterations        : {iterations}\n"
+                f"EXTRA_HYSTERESIS  : {extra_hyst_min} --> {extra_hyst_max}\n"
+                f"TBL               : {tbl_min} --> {tbl_max}\n"
+                f"TOFF              : {toff_min} --> {toff_max}"
             )
 
     def home(self) -> None:
@@ -1258,8 +1117,8 @@ class ChopperTune:
             float: The calculated frequency in Hz.
         """
         return 1 / (
-            2 * (12 + 32 * toff) * 1 / (1000000 * self.fclk)
-            + 2 * 1 / (1000000 * self.fclk) * 16 * (1.5**tbl)
+            2 * (12 + 32 * toff) * 1 / (1000000 * FCLK)
+            + 2 * 1 / (1000000 * FCLK) * 16 * (1.5**tbl)
         )
 
     def get_initial_direction(self, axes: list[str]) -> Coord:
@@ -1376,24 +1235,17 @@ class ChopperTune:
     def chopper_tune(
         self,
         axis: str,
-        current_min: None | int = None,
-        current_max: None | int = None,
+        extra_hyst_min: int = DEFAULT_REGISTER_VALUES["EXTRA_HYSTERESIS"][0],
+        extra_hyst_max: int = DEFAULT_REGISTER_VALUES["EXTRA_HYSTERESIS"][1],
         tbl_min: int = DEFAULT_REGISTER_VALUES["TBL"][0],
         tbl_max: int = DEFAULT_REGISTER_VALUES["TBL"][1],
         toff_min: int = DEFAULT_REGISTER_VALUES["TOFF"][0],
         toff_max: int = DEFAULT_REGISTER_VALUES["TOFF"][1],
-        hstrt_hend_max: int = DEFAULT_REGISTER_VALUES["HSTRT_HEND_MAX"],
-        hstrt_min: int = DEFAULT_REGISTER_VALUES["HSTRT"][0],
-        hstrt_max: int = DEFAULT_REGISTER_VALUES["HSTRT"][1],
-        hend_min: int = DEFAULT_REGISTER_VALUES["HEND"][0],
-        hend_max: int = DEFAULT_REGISTER_VALUES["HEND"][1],
-        tpfd_min: int = DEFAULT_REGISTER_VALUES["TPFD"][0],
-        tpfd_max: int = DEFAULT_REGISTER_VALUES["TPFD"][1],
-        min_speed: None | int = None,
-        max_speed: None | int = None,
-        speed_change_step: None | int = None,
+        min_speed: None | float = None,
+        max_speed: None | float = None,
+        speed_change_step: None | float = None,
         search_method: SearchMethod = SearchMethod.BruteForce,
-        travel_distance: None | int = None,
+        travel_distance: None | float = None,
         direction: int = 1,
         accel_chip_name: str = "default",
         run_plotter: bool = True,
@@ -1403,43 +1255,22 @@ class ChopperTune:
 
         Args:
             axis (str): Axis to tune. Should be one of ["x", "y", "z"].
-            current_min (None | int): Minimum steeper current in mA, or use
-                None to set the current to the `run_current` value.
-            current_max (None | int): Maximum steeper current in mA, or use
-                None to set the current to the `run_current` value.
+            extra_hyst_min (int): The min EXTRA_HYSTERESIS value.
+            extra_hyst_max (int): The max EXTRA_HYSTERESIS value.
             tbl_min (int): The min TBL value.
             tbl_max (int): The max TBL value.
             toff_min (int): The min TOFF value.
             toff_max (int): The max TOFF value.
-            hstrt_hend_max (int): The max HSTRT_HEND value
-            hstrt_min (int): The min HSTRT value.
-            hstrt_max (int): The max HSTRT value.
-            hend_min (int): The min HEND value.
-            hend_max (int): The max HEND value.
-            tpfd_min (int): The min TPFD value.
-            tpfd_max (int): The max TPFD value.
-            min_speed (None | int): The in speed value, or can be set to
-                None to auto calculate the value over the required RPM
-                value.
-            max_speed (None | int): The max speed value, or can be set to
-                None to auto calculate the value over the required RPM
-                value.
-            speed_change_step (None | int): The step in each iteration the speed
-                will be increased to.
-            search_method (SearchMethod): The search method, can be one of
-                [SearchMethod.BruteForce, SearchMethod.Adaptive], default value
-                is SearchMethod.BruteForce.
-            travel_distance (None | int): The travel distance, or can be set to
-                None to calculate the travel distance with the
-                `measure_time`, `max_speed` and `accel_decel_distance`.
-            direction (int): The movement direction, can be 1 or -1.
-                1 means starting from the minimum position to maximum position,
-                -1 means starting from the maximum position to minimum position.
-            accel_chip (str): The name of the acceleration chip.
-            run_plotter (bool): If set to True, the magnitude graphs will be
-                generated after the vibration measurements are completed.
-            compare_with (None | str): The name of the previous sample set to
-                compare with.
+            min_speed (None | float): The min speed, or None to auto-calculate.
+            max_speed (None | float): The max speed, or None to auto-calculate.
+            speed_change_step (None | float): Speed step per iteration.
+            search_method (SearchMethod): The search method.
+            travel_distance (None | float): Travel distance, or None to
+                auto-calculate.
+            direction (int): Movement direction: 1 or -1.
+            accel_chip_name (str): The name of the acceleration chip.
+            run_plotter (bool): If True, generate magnitude graphs after measurement.
+            compare_with (None | str): Name of previous sample set to compare with.
 
         Returns:
             None | dict: The best parameters found, or None if tuning was not
@@ -1462,7 +1293,6 @@ class ChopperTune:
         self.registers["stepper_count"] = self.get_stepper_count(axis)
 
         self.driver, self.sense_resistor = self.detect_driver(stepper=axis)
-        tpfd_min, tpfd_max = self.validate_tpfd_values(self.driver, tpfd_min, tpfd_max)
 
         axes, steppers = self.get_axes_and_steppers(axis)
 
@@ -1471,25 +1301,16 @@ class ChopperTune:
         accel_chip_name = self.get_accelerometer_chip(accel_chip_name, axis)
         self.accelerometer = self.printer.lookup_object(accel_chip_name)
 
-        current_min, current_max = self.get_current_range(
-            self.measurement_mode, current_min, current_max, steppers
-        )
-
         if self.measurement_mode == MeasurementMode.Resonances:
-            # In vibration measurement mode,
-            # search and take registers from printer.cfg
+            # In resonance measurement mode, read current autotune config values
             (
+                extra_hyst_min,
+                extra_hyst_max,
                 tbl_min,
                 tbl_max,
                 toff_min,
                 toff_max,
-                hstrt_min,
-                hstrt_max,
-                hend_min,
-                hend_max,
-                tpfd_min,
-                tpfd_max,
-            ) = self.get_default_stepper_parameters(steppers)
+            ) = self.get_default_autotune_parameters(steppers)
 
         (min_speed, max_speed, speed_change_step) = self.configure_speed_limits(
             min_speed,
@@ -1515,18 +1336,12 @@ class ChopperTune:
 
         # Info message
         self.display_process_summary(
-            current_min,
-            current_max,
+            extra_hyst_min,
+            extra_hyst_max,
             tbl_min,
             tbl_max,
             toff_min,
             toff_max,
-            hstrt_min,
-            hstrt_max,
-            hend_min,
-            hend_max,
-            tpfd_min,
-            tpfd_max,
             min_speed,
             max_speed,
             speed_change_step,
@@ -1595,34 +1410,23 @@ class ChopperTune:
         self.coord_generator = coord_generator
         self.accel_chip_name = accel_chip_name
         self.steppers = steppers
-        self.current = current_min
 
         # bounds
         self.min_speed = min_speed
         self.max_speed = max_speed
         self.speed_change_step = speed_change_step
-        self.current_min = current_min
-        self.current_max = current_max
+        self.extra_hyst_min = extra_hyst_min
+        self.extra_hyst_max = extra_hyst_max
 
         self.tbl_min = tbl_min
         self.tbl_max = tbl_max
         self.toff_min = toff_min
         self.toff_max = toff_max
-        self.hstrt_min = hstrt_min
-        self.hstrt_max = hstrt_max
-        self.hstrt_hend_max = hstrt_hend_max
-        self.hend_min = hend_min
-        self.hend_max = hend_max
-        self.tpfd_min = tpfd_min
-        self.tpfd_max = tpfd_max
 
         self.bounds = [
-            (self.current_min, self.current_max),
+            (self.extra_hyst_min, self.extra_hyst_max),
             (self.tbl_min, self.tbl_max),
             (self.toff_min, self.toff_max),
-            (self.hstrt_min, self.hstrt_max),
-            (self.hend_min, self.hend_max),
-            (self.tpfd_min, self.tpfd_max),
         ]
         best_parameters = self.search_best_parameters()
         if self.measurement_mode == MeasurementMode.Resonances:
@@ -1655,12 +1459,9 @@ class ChopperTune:
             # Compare best result with previous samples
             if best_parameters and compare_with is not None:
                 sample_name = self.generate_sample_name(
-                    best_parameters["current"],
+                    best_parameters["extra_hysteresis"],
                     best_parameters["tbl"],
                     best_parameters["toff"],
-                    best_parameters["hstrt"],
-                    best_parameters["hend"],
-                    best_parameters["tpfd"],
                     best_parameters["speed"],
                 )
                 self.compare_results(
@@ -1679,38 +1480,27 @@ class ChopperTune:
 
     def generate_sample_name(
         self,
-        current: int,
+        extra_hysteresis: int,
         tbl: int,
         toff: int,
-        hstrt: int,
-        hend: int,
-        tpfd: int,
         speed: float,
     ) -> str:
-        """Generate a sample name based on the parameters.
+        """Generate a sample name based on the autotune parameters.
 
         Args:
-            current (int): The current value.
+            extra_hysteresis (int): The extra hysteresis value.
             tbl (int): The TBL value.
             toff (int): The TOFF value.
-            hstrt (int): The HSTRT value.
-            hend (int): The HEND value.
-            tpfd (int): The TPFD value.
             speed (float): The speed value.
 
         Returns:
             str: The generated sample name.
         """
-        freq = self.calculate_frequency(tbl, toff)
         return (
-            f"current={current}_"
+            f"eh={extra_hysteresis}_"
             f"tbl={tbl}_"
             f"toff={toff}_"
-            f"hstrt={hstrt}_"
-            f"hend={hend}_"
-            f"tpfd={tpfd}_"
-            f"speed={speed:.2f}_"
-            f"freq={freq / 1000:.2f}kHz"
+            f"speed={speed:.2f}"
         )
 
     def compare_results(
@@ -1838,49 +1628,30 @@ class ChopperTune:
 
         Args:
             params (list[float]): The parameters to optimize.
+                Order: [extra_hysteresis, tbl, toff, speed*100]
 
         Returns:
             float: The average measured vibrations.
         """
         self.gcode.respond_info("-------------------------------")
-        current, tbl, toff, hstrt, hend, tpfd, speed = [round(p) for p in params]
+        extra_hysteresis, tbl, toff, speed = [round(p) for p in params]
 
         # convert speed back to the correct range
         speed = float(speed) / 100
 
-        # Dump TMC settings
         self.gcode.respond_info(
+            f"extra_hysteresis={extra_hysteresis} "
             f"tbl={tbl} "
             f"toff={toff} "
-            f"hstrt={hstrt} "
-            f"hend={hend} "
-            f"tpfd={tpfd} "
-            f"current={current} "
             f"speed={speed:.2f}"
         )
 
-        # penalize hstrt + hend > hstrt_hend_max
-        if hstrt + hend > self.hstrt_hend_max:
-            self.gcode.respond_info(
-                f"Penalizing hstrt + hend > {self.hstrt_hend_max}: inf mm/s²"
-            )
-            self.number_of_samples += 1  # consider this as a sample
-            return float("inf")
-
-        # Set tbl, toff, hend, and hstrt values
-        self.apply_registers(self.steppers, "curr", current)
-        self.apply_registers(self.steppers, "tbl", tbl)
-        self.apply_registers(self.steppers, "toff", toff)
-        self.apply_registers(self.steppers, "hstrt", hstrt)
-        self.apply_registers(self.steppers, "hend", hend)
-        self.apply_registers(self.steppers, "tpfd", tpfd)
+        # Apply autotune parameters
+        self.apply_autotune(self.steppers, extra_hysteresis, tbl, toff)
         sample_name = self.generate_sample_name(
-            current=current,
+            extra_hysteresis=extra_hysteresis,
             tbl=tbl,
             toff=toff,
-            hstrt=hstrt,
-            hend=hend,
-            tpfd=tpfd,
             speed=speed,
         )
         if sample_name in self.samples:
@@ -1952,19 +1723,15 @@ class ChopperTune:
         return best_params
 
     def perform_brute_force_search(self) -> list[int]:
-        """Perform brute-force search for optimal parameters.
+        """Perform brute-force search for optimal autotune parameters.
 
         Returns:
             list[int]: The best parameters found.
         """
-        # Brute-force search
         bounds = [
-            slice(self.current_min, self.current_max + 1, self.current_change_step),
+            slice(self.extra_hyst_min, self.extra_hyst_max + 1, 1),
             slice(self.tbl_min, self.tbl_max + 1, 1),
             slice(self.toff_min, self.toff_max + 1, 1),
-            slice(self.hstrt_min, self.hstrt_max + 1, 1),
-            slice(self.hend_min, self.hend_max + 1, 1),
-            slice(self.tpfd_min, self.tpfd_max + 1, 1),
             slice(
                 int(self.min_speed * 100),
                 int(self.max_speed * 100) + 1,
@@ -1973,24 +1740,16 @@ class ChopperTune:
         ]
 
         # update total expected samples
-        total_current_steps = (
-            self.current_max - self.current_min
-        ) // self.current_change_step + 1
+        total_eh_steps = self.extra_hyst_max - self.extra_hyst_min + 1
         total_tbl_steps = self.tbl_max - self.tbl_min + 1
         total_toff_steps = self.toff_max - self.toff_min + 1
-        total_hstrt_steps = self.hstrt_max - self.hstrt_min + 1
-        total_hend_steps = self.hend_max - self.hend_min + 1
-        total_tpfd_steps = self.tpfd_max - self.tpfd_min + 1
         total_speed_steps = (
             int(self.max_speed * 100) - int(self.min_speed * 100)
         ) // int(self.speed_change_step * 100) + 1
         self.total_expected_samples = (
-            total_current_steps
+            total_eh_steps
             * total_tbl_steps
             * total_toff_steps
-            * total_hstrt_steps
-            * total_hend_steps
-            * total_tpfd_steps
             * total_speed_steps
         )
 
@@ -2013,12 +1772,9 @@ class ChopperTune:
         # 'tol' can be higher since our parameters are discrete
 
         bounds = [
-            (self.current_min, self.current_max),
+            (self.extra_hyst_min, self.extra_hyst_max),
             (self.tbl_min, self.tbl_max),
             (self.toff_min, self.toff_max),
-            (self.hstrt_min, self.hstrt_max),
-            (self.hend_min, self.hend_max),
-            (self.tpfd_min, self.tpfd_max),
             (self.min_speed * 100, self.max_speed * 100),
         ]
 
@@ -2057,32 +1813,22 @@ class ChopperTune:
             "Starting Progressive (Trinamic Flowchart) Optimization..."
         )
 
-        # Initial "Safe" Defaults as per Datasheet
-        best_current = self.current_min
+        # params order: [extra_hysteresis, tbl, toff, speed*100]
         best_toff = self.toff_min if self.toff_min > 0 else 3
         best_tbl = 2
-        best_hend = self.hend_min
-        best_hstrt = self.hstrt_min
-        best_tpfd = self.tpfd_min
+        best_eh = self.extra_hyst_min
         best_params = [
-            best_current,
+            best_eh,
             best_tbl,
             best_toff,
-            best_hstrt,
-            best_hend,
-            best_tpfd,
-            self.min_speed * 100,
+            int(self.min_speed * 100),
         ]
         self.total_expected_samples = (
             (self.toff_max - self.toff_min + 1)
             + (self.tbl_max - self.tbl_min + 1)
-            + (self.hend_max - self.hend_min + 1)
-            + (self.hstrt_max - self.hstrt_min + 1)
+            + (self.extra_hyst_max - self.extra_hyst_min + 1)
         )
 
-        # Step 1: Find optimal TOFF (Base Frequency)
-        # The datasheet suggests TOFF should be chosen for 20-50kHz.
-        # We find the one that produces the least vibration at default hysteresis.
         self.gcode.respond_info("Step 1: Optimizing TOFF...")
         best_params = self.progressive_search_loop(
             param_min=self.toff_min,
@@ -2091,8 +1837,7 @@ class ChopperTune:
             best_params=best_params,
         )
         self.gcode.respond_info(f"-> Best TOFF found: {best_params[2]}")
-        # Step 2: Find optimal TBL (Blank Time)
-        # Clean up the comparator signal before fine-tuning hysteresis.
+
         self.gcode.respond_info("Step 2: Optimizing TBL...")
         best_params = self.progressive_search_loop(
             param_min=self.tbl_min,
@@ -2101,37 +1846,15 @@ class ChopperTune:
             best_params=best_params,
         )
         self.gcode.respond_info(f"-> Best TBL found: {best_params[1]}")
-        # Step 3: Find optimal HEND (Hysteresis End / Low-side)
-        # Flowchart: Start with HSTRT=0, increase HEND until smooth.
-        self.gcode.respond_info("Step 3: Optimizing HEND...")
-        best_params = self.progressive_search_loop(
-            param_min=self.hend_min,
-            param_max=self.hend_max,
-            param_index=4,
-            best_params=best_params,
-        )
-        self.gcode.respond_info(f"-> Best HEND found: {best_params[4]}")
-        # Step 4: Find optimal HSTRT (Hysteresis Start / High-side)
-        # Flowchart: Use best HEND, increase HSTRT to fine-tune the zero-crossing.
-        self.gcode.respond_info("Step 4: Optimizing HSTRT...")
-        best_params = self.progressive_search_loop(
-            param_min=self.hstrt_min,
-            param_max=self.hstrt_max,
-            param_index=3,
-            best_params=best_params,
-        )
-        self.gcode.respond_info(f"-> Best HSTRT found: {best_params[3]}")
 
-        # Finally search for TPFD if applicable
-        if self.driver in DRIVERS_SUPPORTING_TPFD:
-            self.gcode.respond_info("Step 5: Optimizing TPFD...")
-            best_params = self.progressive_search_loop(
-                param_min=self.tpfd_min,
-                param_max=self.tpfd_max,
-                param_index=5,
-                best_params=best_params,
-            )
-            self.gcode.respond_info(f"-> Best TPFD found: {best_params[5]}")
+        self.gcode.respond_info("Step 3: Optimizing EXTRA_HYSTERESIS...")
+        best_params = self.progressive_search_loop(
+            param_min=self.extra_hyst_min,
+            param_max=self.extra_hyst_max,
+            param_index=0,
+            best_params=best_params,
+        )
+        self.gcode.respond_info(f"-> Best EXTRA_HYSTERESIS found: {best_params[0]}")
 
         return best_params
 
@@ -2148,24 +1871,15 @@ class ChopperTune:
         start_time = self.reactor.monotonic()
 
         if self.measurement_mode == MeasurementMode.Resonances:
-            # Dump TMC settings
             self.gcode.respond_info(
+                f"eh={self.extra_hyst_min} "
                 f"tbl={self.tbl_min} "
                 f"toff={self.toff_min} "
-                f"hstrt={self.hstrt_min} "
-                f"hend={self.hend_min} "
-                f"tpfd={self.tpfd_min} "
-                f"current={self.current_min} "
                 f"speed={self.min_speed:.2f} --> {self.max_speed:.2f}"
             )
 
-        # set initial values
-        self.apply_registers(self.steppers, "curr", self.current_min)
-        self.apply_registers(self.steppers, "tbl", self.tbl_min)
-        self.apply_registers(self.steppers, "toff", self.toff_min)
-        self.apply_registers(self.steppers, "hend", self.hend_min)
-        self.apply_registers(self.steppers, "hstrt", self.hstrt_min)
-        self.apply_registers(self.steppers, "tpfd", self.tpfd_min)
+        # set initial autotune parameters
+        self.apply_autotune(self.steppers, self.extra_hyst_min, self.tbl_min, self.toff_min)
 
         if self.search_method == SearchMethod.BruteForce:
             best_params = self.perform_brute_force_search()
@@ -2176,46 +1890,39 @@ class ChopperTune:
 
         # update overall best params with final results
         overall_best_params = {
-            "current": best_params[0],
+            "extra_hysteresis": best_params[0],
             "tbl": best_params[1],
             "toff": best_params[2],
-            "hstrt": best_params[3],
-            "hend": best_params[4],
-            "tpfd": best_params[5],
-            "speed": float(best_params[6]) / 100,
+            "speed": float(best_params[3]) / 100,
         }
 
         duration = self.reactor.monotonic() - start_time
 
         result_message = (
             f"Optimization Completed in {self.convert_seconds_to_hms(duration)}\n"
-            f"Number of samples : {self.number_of_samples}\n"
-            f"Best Score        : {self.best_result:.1f} mm/s²\n\n"
-            "Parameters\n"
-            "----------\n"
-            f"speed        : {overall_best_params['speed']:.2f} mm/s\n"
-            f"current      : {overall_best_params['current']} mA\n"
-            f"driver_tbl   : {overall_best_params['tbl']}\n"
-            f"driver_toff  : {overall_best_params['toff']}\n"
-            f"driver_hstrt : {overall_best_params['hstrt']}\n"
-            f"driver_hend  : {overall_best_params['hend']}\n"
+            f"Number of samples      : {self.number_of_samples}\n"
+            f"Best Score             : {self.best_result:.1f} mm/s²\n\n"
+            "Best Autotune Parameters\n"
+            "------------------------\n"
+            f"speed                  : {overall_best_params['speed']:.2f} mm/s\n"
+            f"extra_hysteresis       : {overall_best_params['extra_hysteresis']}\n"
+            f"driver_TBL             : {overall_best_params['tbl']}\n"
+            f"driver_TOFF            : {overall_best_params['toff']}"
         )
-        if self.driver in DRIVERS_SUPPORTING_TPFD:
-            result_message += f"driver_tpfd : {overall_best_params['tpfd']}"
         self.gcode.respond_info(result_message)
 
         # Apply best parameters
-        self.apply_registers(self.steppers, "curr", overall_best_params["current"])
-        self.apply_registers(self.steppers, "tbl", overall_best_params["tbl"])
-        self.apply_registers(self.steppers, "toff", overall_best_params["toff"])
-        self.apply_registers(self.steppers, "hend", overall_best_params["hend"])
-        self.apply_registers(self.steppers, "hstrt", overall_best_params["hstrt"])
-        self.apply_registers(self.steppers, "tpfd", overall_best_params["tpfd"])
+        self.apply_autotune(
+            self.steppers,
+            overall_best_params["extra_hysteresis"],
+            overall_best_params["tbl"],
+            overall_best_params["toff"],
+        )
 
         return overall_best_params
 
     def save_configs(self, best_parameters: dict | None) -> None:
-        """Save the best parameters to printer.cfg.
+        """Save the best autotune parameters to printer.cfg.
 
         Args:
             best_parameters (dict | None): The best parameters found.
@@ -2224,27 +1931,24 @@ class ChopperTune:
             return
 
         for stepper_index in range(self.registers["stepper_count"]):
-            stepper_index = str(stepper_index) if stepper_index > 0 else ""
-            for field, value in best_parameters.items():
-                if field == "speed":
-                    continue  # skip speed field
-
-                if field == "tpfd" and (
-                    value == -1 or self.driver not in DRIVERS_SUPPORTING_TPFD
-                ):
-                    continue  # skip tpfd for unsupported drivers and if the value is -1
-
-                field_name = f"driver_{field}" if field != "current" else "run_current"
-                value = str(value) if field != "current" else f"{value / 1000:0.2f}"
-
+            suffix = str(stepper_index) if stepper_index > 0 else ""
+            section = f"autotune_tmc {self.steppers[0]}{suffix}"
+            if "extra_hysteresis" in best_parameters:
                 self.configfile.set(
-                    f"tmc{self.driver} {self.steppers[0]}{stepper_index}",
-                    field_name,
-                    value,
+                    section, "extra_hysteresis",
+                    str(best_parameters["extra_hysteresis"]),
+                )
+            if "tbl" in best_parameters:
+                self.configfile.set(
+                    section, "driver_TBL", str(best_parameters["tbl"])
+                )
+            if "toff" in best_parameters:
+                self.configfile.set(
+                    section, "driver_TOFF", str(best_parameters["toff"])
                 )
 
         self.gcode.respond_info(
-            "Best parameters saved to printer.cfg, run SAVE_CONFIG to apply."
+            "Best autotune parameters saved to printer.cfg, run SAVE_CONFIG to apply."
         )
 
     def plot_data(self, date_stamp: None | str = None) -> None:
@@ -2269,7 +1973,7 @@ class ChopperTune:
             fig = go.Figure()
             for entry in param:
                 toff = int(entry[0].split("_")[2].split("=")[1])
-                color = COLORS[toff if toff <= 8 else toff - 8]
+                color = COLORS[toff % len(COLORS)]
                 fig.add_trace(
                     go.Bar(
                         x=[entry[1]],
@@ -2288,11 +1992,9 @@ class ChopperTune:
             plot_html_path = os.path.join(
                 RESULTS_FOLDER,
                 f"{date_stamp}"
-                f"_interactive_plot_{name}"
+                f"_autotune_sweep_{name}"
                 f"_{self.accel_chip_name}"
-                f"_tmc{self.driver}"
                 f"_{self.steppers[0]}"
-                f"_{self.sense_resistor}"
                 ".html",
             )
             plot_html_paths.append(plot_html_path)
@@ -2301,10 +2003,6 @@ class ChopperTune:
                 os.makedirs(RESULTS_FOLDER)
 
             pio.write_html(fig, plot_html_path, auto_open=False)
-            speed1 = params[1][0][0].split("_")[6].split("=")[1]
-            speed2 = params[1][1][0].split("_")[6].split("=")[1]
-            if speed1 != speed2:
-                break
 
         # Export Info
         self.gcode.respond_info("Access to interactive plot at:")
@@ -2323,11 +2021,9 @@ class ChopperTune:
         json_path = os.path.join(
             RESULTS_FOLDER,
             f"{date_stamp}"
-            f"_sample_data"
+            f"_autotune_sweep_data"
             f"_{self.accel_chip_name}"
-            f"_tmc{self.driver}"
             f"_{self.steppers[0]}"
-            f"_{self.sense_resistor}"
             ".json",
         )
         with open(json_path, mode="w") as file:
@@ -2361,21 +2057,16 @@ class ChopperTune:
             search_method = SearchMethod.to_method(
                 gcmd.get("SEARCH_METHOD", "progressive").lower()
             )
-            current_min = gcmd.get_float("CURRENT_MIN_MA", None)
-            current_max = gcmd.get_float("CURRENT_MAX_MA", None)
+            extra_hyst_min = gcmd.get_int(
+                "EXTRA_HYSTERESIS_MIN", DEFAULT_REGISTER_VALUES["EXTRA_HYSTERESIS"][0]
+            )
+            extra_hyst_max = gcmd.get_int(
+                "EXTRA_HYSTERESIS_MAX", DEFAULT_REGISTER_VALUES["EXTRA_HYSTERESIS"][1]
+            )
             tbl_min = gcmd.get_int("TBL_MIN", DEFAULT_REGISTER_VALUES["TBL"][0])
             tbl_max = gcmd.get_int("TBL_MAX", DEFAULT_REGISTER_VALUES["TBL"][1])
             toff_min = gcmd.get_int("TOFF_MIN", DEFAULT_REGISTER_VALUES["TOFF"][0])
             toff_max = gcmd.get_int("TOFF_MAX", DEFAULT_REGISTER_VALUES["TOFF"][1])
-            hstrt_hend_max = gcmd.get_int(
-                "HSTRT_HEND_MAX", DEFAULT_REGISTER_VALUES["HSTRT_HEND_MAX"]
-            )
-            hstrt_min = gcmd.get_int("HSTRT_MIN", DEFAULT_REGISTER_VALUES["HSTRT"][0])
-            hstrt_max = gcmd.get_int("HSTRT_MAX", DEFAULT_REGISTER_VALUES["HSTRT"][1])
-            hend_min = gcmd.get_int("HEND_MIN", DEFAULT_REGISTER_VALUES["HEND"][0])
-            hend_max = gcmd.get_int("HEND_MAX", DEFAULT_REGISTER_VALUES["HEND"][1])
-            tpfd_min = gcmd.get_int("TPFD_MIN", DEFAULT_REGISTER_VALUES["TPFD"][0])
-            tpfd_max = gcmd.get_int("TPFD_MAX", DEFAULT_REGISTER_VALUES["TPFD"][1])
             min_speed = gcmd.get_float("MIN_SPEED", None)
             max_speed = gcmd.get_float("MAX_SPEED", None)
             speed_change_step = gcmd.get_float("SPEED_CHANGE_STEP", None)
@@ -2401,19 +2092,12 @@ class ChopperTune:
 
             return self.chopper_tune(
                 axis=axis,
-                current_min=current_min,
-                current_max=current_max,
+                extra_hyst_min=extra_hyst_min,
+                extra_hyst_max=extra_hyst_max,
                 tbl_min=tbl_min,
                 tbl_max=tbl_max,
                 toff_min=toff_min,
                 toff_max=toff_max,
-                hstrt_hend_max=hstrt_hend_max,
-                hstrt_min=hstrt_min,
-                hstrt_max=hstrt_max,
-                hend_min=hend_min,
-                hend_max=hend_max,
-                tpfd_min=tpfd_min,
-                tpfd_max=tpfd_max,
                 min_speed=min_speed,
                 max_speed=max_speed,
                 speed_change_step=speed_change_step,
