@@ -596,6 +596,32 @@ class ChopperTune:
         """Check whether the printer exposes a secondary X stepper."""
         return "stepper_x1" in self.settings
 
+    def get_axis_steppers(self, axis: str) -> tuple[str, ...]:
+        """Return all stepper names for an axis, ordered (e.g. stepper_y, stepper_y1).
+
+        Matches the primary stepper (`stepper_{axis}`) plus any numeric-suffixed
+        siblings (`stepper_{axis}1`, `stepper_{axis}2`, ...). This is used to
+        apply autotune to every motor on the swept axis on AWD/IDEX-style
+        printers without picking up the perpendicular axis stepper.
+
+        Args:
+            axis (str): One of ["x", "y", "z"].
+
+        Returns:
+            tuple[str, ...]: All stepper names belonging to the axis, primary first.
+        """
+        import re
+        pattern = re.compile(rf"^stepper_{axis}(\d*)$")
+        matches = []
+        for key in self.settings:
+            m = pattern.match(key)
+            if m is None:
+                continue
+            idx = int(m.group(1)) if m.group(1) else 0
+            matches.append((idx, key))
+        matches.sort()
+        return tuple(name for _, name in matches)
+
     def get_axes_and_steppers(
         self, axis: str
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -617,30 +643,21 @@ class ChopperTune:
                 f"WARNING!!! Unsupported kinematics: {self.kinematics}"
             )
 
-        if self.kinematics == "corexy":
-            if axis in ("x", "y"):
-                if axis == "x":
-                    axes = ("x", "y")
-                    if self.has_secondary_x_stepper():
-                        steppers = ("stepper_x", "stepper_x1")
-                    else:
-                        steppers = ("stepper_x", "stepper_y")
-                elif axis == "y":
-                    axes = ("y", "x")
-                    steppers = ("stepper_y", "stepper_x")
-            elif axis == "z":
-                axes = ("z", "x")
-                steppers = ("stepper_z",)
-        elif self.kinematics == "cartesian":
-            if axis == "x":
-                axes = ("x", "y")
-                steppers = ("stepper_x",)
-            elif axis == "y":
-                axes = ("y", "x")
-                steppers = ("stepper_y",)
-            elif axis == "z":
-                axes = ("z", "x")
-                steppers = ("stepper_z",)
+        if axis == "x":
+            axes = ("x", "y")
+        elif axis == "y":
+            axes = ("y", "x")
+        else:  # axis == "z"
+            axes = ("z", "x")
+
+        # Apply autotune to every motor on the swept axis (handles AWD/IDEX
+        # setups with stepper_x1, stepper_y1, etc.) without leaking to the
+        # perpendicular axis stepper.
+        steppers = self.get_axis_steppers(axis)
+        if not steppers:
+            raise self.printer.command_error(
+                f"WARNING!!! No stepper found for axis '{axis}'"
+            )
 
         return axes, steppers
 
@@ -1985,9 +2002,8 @@ class ChopperTune:
         if best_parameters is None:
             return
 
-        for stepper_index in range(self.registers["stepper_count"]):
-            suffix = str(stepper_index) if stepper_index > 0 else ""
-            section = f"autotune_tmc {self.steppers[0]}{suffix}"
+        for stepper in self.steppers:
+            section = f"autotune_tmc {stepper}"
             if "extra_hysteresis" in best_parameters:
                 self.configfile.set(
                     section, "extra_hysteresis",
