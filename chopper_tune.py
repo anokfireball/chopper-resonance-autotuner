@@ -1094,9 +1094,15 @@ class ChopperTune:
             )
 
     def home(self) -> None:
-        """Home."""
-        self.gcode.run_script_from_command("G28 X Y Z")
-        self.toolhead.wait_moves()
+        """Home axes that are not already homed."""
+        kin = self.toolhead.get_kinematics()
+        homed_axes = kin.get_status(None).get("homed_axes", "")
+        axes_to_home = "".join(a for a in "xyz" if a not in homed_axes)
+        if axes_to_home:
+            self.gcode.run_script_from_command(
+                f"G28 {' '.join(axes_to_home.upper())}"
+            )
+            self.toolhead.wait_moves()
 
     def get_static_acceleration(self) -> list[Accel_Measurement]:
         """Get static accelerometer samples.
